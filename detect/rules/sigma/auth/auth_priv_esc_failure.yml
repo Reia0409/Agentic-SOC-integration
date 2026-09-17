@@ -1,0 +1,47 @@
+# 사람 계정의 sudo / su / pkexec 거부.
+# - EC2 ubuntu 는 NOPASSWD sudo 라 비밀번호를 물을 일이 없다 → incorrect password, NOT in sudoers 가
+#   나오면 그 계정은 원래 주인이 아닐 가능성이 크다(탈취 계정, 새로 만든 계정의 권한 확인).
+# - 서비스 계정은 auth_web_user_priv_esc(critical)가 잡으므로 여기서 뺀다(중복 히트 방지).
+title: Privilege Escalation Denied For Interactive Account
+id: ee811e56-c51c-4f19-91b7-9ae1e4f11b8a
+status: experimental
+description: 서비스 계정이 아닌 계정의 sudo·su·pkexec 요청이 거부됨(비밀번호 오류, sudoers 미등록, 명령 불허)
+references:
+  - https://attack.mitre.org/techniques/T1548/003/
+author: 박지희
+date: 2026-09-17
+tags:
+  - attack.privilege-escalation
+  - attack.t1548.003
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection:
+    layer_data.event:
+      - sudo_denied
+      - su_failure
+      - pkexec_denied
+  filter_service_actor:
+    layer_data.src_user:
+      - www-data
+      - nginx
+      - apache
+      - nobody
+      - mysql
+      - redis
+  condition: selection and not filter_service_actor
+fields:
+  - layer_data.src_user
+  - layer_data.user
+  - layer_data.event
+  - layer_data.command
+  - layer_data.reason
+  - layer_data.tty
+falsepositives:
+  - 비밀번호 sudo 를 쓰는 개인 계정의 오타 (web-01 에는 없음)
+level: medium
+x_correlation: recommended          # required(필수) | recommended(권장) | none(단독 판정)
+x_correlation_note: '같은 계정(src_user)의 최근 SSH 로그인 IP·계정 생성 시각과 묶어야 탈취·백도어 여부를 판단'
+x_seed_entity:
+  - layer_data.src_user

@@ -1,0 +1,44 @@
+# [#12 · ⑥ 웹셸 실행] apache_webshell_command.yml
+# 막는 공격: 배치된 웹셸에 명령을 실어 원격 실행 (웹셸 사용)
+# 탐지 근거: .php 대상 + 명령 실행 파라미터 또는 명령 문자열
+# 조인: 이 이벤트가 audit execve/webroot 룰과 이어지는 계층 넘김 지점 (시스템 계층으로)
+title: Web Shell Command Execution (Apache)
+id: f38e717b-296c-44bc-a9e3-adffc9ca95cb
+status: test
+description: 배치된 웹셸(.php)에 명령 실행 파라미터/명령 문자열이 실린 요청 탐지 (웹셸 사용 단계)
+author: 지원
+date: 2026-09-14
+logsource:
+  product: apache
+  category: webserver
+detection:
+  php_target:
+    path|contains: '.php'
+  cmd_param:
+    path|contains:
+      - 'cmd='
+      - 'exec='
+      - 'command='
+      - 'shell='
+      - '&c='
+      - '?c='
+  cmd_string:
+    path|contains:
+      - 'whoami'
+      - 'uname'
+      - '/etc/passwd'
+      - 'wget '
+      - 'curl '
+      - 'bash -i'
+  condition: php_target and (cmd_param or cmd_string)
+fields:
+  - src_ip
+  - path
+  - status
+  - user_agent
+falsepositives:
+  - 명령형 파라미터를 쓰는 정상 앱 (드묾)
+level: critical
+tags:
+  - attack.execution
+  - attack.t1059   # Command and Scripting Interpreter

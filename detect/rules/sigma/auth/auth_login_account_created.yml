@@ -1,0 +1,51 @@
+# 로그인 가능한 계정이 새로 생기거나, 기존 계정에 로그인 셸이 부여됨.
+# - 패키지가 만드는 시스템 계정(_chrony, syslog 등)은 shell 이 /usr/sbin/nologin·/bin/false → 필터.
+# - SSM Session Manager 가 처음 쓰일 때 만드는 ssm-user(shell=/bin/sh) → 필터.
+# - www-data 의 셸을 nologin → /bin/bash 로 바꾸는 것은 authorized_keys 백도어의 준비 단계라 같이 잡는다.
+title: Login-Capable Account Created Or Login Shell Enabled
+id: 3a62f9d5-47ef-40b5-946d-9a849b838eda
+status: experimental
+description: useradd 로 로그인 셸이 있는 계정이 생기거나 usermod/chsh 로 계정에 로그인 셸이 부여됨
+references:
+  - https://attack.mitre.org/techniques/T1136/001/
+  - https://attack.mitre.org/techniques/T1098/
+author: 박지희
+date: 2026-09-17
+tags:
+  - attack.persistence
+  - attack.t1136.001
+  - attack.t1098
+logsource:
+  product: linux
+  service: auth
+detection:
+  sel_created:
+    layer_data.event: user_created
+  sel_shell_enabled:
+    layer_data.event: user_modified
+    layer_data.changed_attr: shell
+  filter_nologin:
+    layer_data.shell|endswith:
+      - /nologin
+      - /false
+      - /sync
+  filter_ssm_user:
+    layer_data.user: ssm-user
+  condition: 1 of sel_* and not 1 of filter_*
+fields:
+  - pid
+  - layer_data.program
+  - layer_data.user
+  - layer_data.uid
+  - layer_data.gid
+  - layer_data.shell
+  - layer_data.home
+  - layer_data.old_value
+falsepositives:
+  - 팀의 계획된 개인 계정 생성
+level: high
+x_correlation: none          # required(필수) | recommended(권장) | none(단독 판정)
+x_correlation_note: '단독 판정 가능. 보강: 같은 계정의 그룹 추가·비밀번호 설정·이후 로그인'
+x_seed_entity:
+  - layer_data.user
+  - pid

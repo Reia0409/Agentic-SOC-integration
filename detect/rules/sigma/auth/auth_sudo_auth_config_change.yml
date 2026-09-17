@@ -1,0 +1,51 @@
+# sudo 로 인증 설정 파일을 건드리는 명령 실행.
+# - 대상: sshd_config(.d), sudoers(.d)/visudo, /etc/pam.d, authorized_keys, vipw/vigr.
+# - 읽기 전용 명령(cat, less, grep, tail …)은 필터. 편집(vi, nano, tee, sed -i, sh -c 'echo >') 은 남는다.
+# - auth.log 의 sudo 줄은 "어느 로그인 계정이 어느 TTY·디렉터리에서" 바꿨는지를 준다.
+# - /etc/passwd·/etc/shadow 는 읽기(cat, id 조회)가 흔해 경로 목록에서 뺐다. 편집은 vipw/vigr 로 본다.
+title: Authentication Configuration Modified Via sudo
+id: 8d5e0d67-4c3a-47de-865c-f76e2b061613
+status: experimental
+description: sudo 로 sshd·sudoers·PAM·authorized_keys 설정을 편집하는 명령이 실행됨
+references:
+  - https://attack.mitre.org/techniques/T1556/
+  - https://attack.mitre.org/techniques/T1098/004/
+author: 박지희
+date: 2026-09-17
+tags:
+  - attack.defense-evasion
+  - attack.persistence
+  - attack.t1556
+  - attack.t1098.004
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection_sudo:
+    layer_data.event: sudo_command
+  selection_target:
+    layer_data.command|contains:
+      - /etc/ssh/sshd_config
+      - /etc/sudoers
+      - visudo
+      - /etc/pam.d/
+      - authorized_keys
+      - vipw
+      - vigr
+  filter_read_only:
+    layer_data.command|re: '^(/usr)?/bin/(cat|less|more|head|tail|grep|ls|stat|diff|wc|file) '
+  condition: selection_sudo and selection_target and not filter_read_only
+fields:
+  - layer_data.src_user
+  - layer_data.user
+  - layer_data.command
+  - layer_data.tty
+  - layer_data.session_type
+  - layer_data.pwd
+falsepositives:
+  - 관리자의 계획된 sshd·sudoers 설정 변경 (변경 시각을 팀 공유 채널과 대조)
+level: medium
+x_correlation: recommended          # required(필수) | recommended(권장) | none(단독 판정)
+x_correlation_note: '변경 뒤 sshd reload·비밀번호 로그인(auth_ssh_password_login)이 이어지는지, 같은 계정의 로그인 출발지'
+x_seed_entity:
+  - layer_data.src_user

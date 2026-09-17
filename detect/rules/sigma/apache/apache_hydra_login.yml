@@ -1,0 +1,38 @@
+# [#3 · ② 초기접근] apache_hydra_login.yml
+# 막는 공격: Hydra 브루트포스 — 로그인 엔드포인트에 자격증명 대량 시도
+# 탐지 근거: Hydra 기본 User-Agent + 로그인 엔드포인트 대상 POST
+# 주의: "1분에 N회" 같은 빈도 기반 탐지는 correlation 룰 영역 → 별도
+title: Hydra Brute-Force Login Attempt (Apache)
+id: 2718568b-838f-4a9b-a7f9-85075f7305b7
+status: test
+description: Apache 로그에서 Hydra 도구 UA 또는 로그인 엔드포인트 대상 무차별 POST 탐지
+references:
+  - https://github.com/vanhauser-thc/thc-hydra
+author: 지원
+date: 2026-09-14
+logsource:
+  product: apache
+  category: webserver
+detection:
+  tool_ua:
+    user_agent|contains: 'Hydra'
+  login_post:
+    method: 'POST'
+    path|contains:
+      - '/wp-login.php'
+      - '/xmlrpc.php'
+      - '/administrator'
+      - '/login'
+  condition: tool_ua or login_post
+fields:
+  - src_ip
+  - path
+  - status
+  - user_agent
+falsepositives:
+  - 정상 사용자의 로그인 실패
+  - 승인된 인증 테스트
+level: medium
+tags:
+  - attack.credential-access
+  - attack.t1110.001   # Brute Force: Password Guessing
