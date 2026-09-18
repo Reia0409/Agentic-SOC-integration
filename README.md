@@ -89,8 +89,8 @@ SERVER_PUBLIC_IP=54.180.11.0                # 자기호출(wp-cron) 제외용
 
 실행 (레포 루트에서):
 ```bash
-python tools/normalize.py       # 4계층 정규화 → 병합·정렬된 이벤트 스트림
-python detect/run.py            # 정규화 → Sigma 매칭 → seed (--out-seeds out/seeds.jsonl 로 저장)
+python tools/normalize.py       # 4계층 정규화 → out/ 아래 계층별 JSONL 저장
+python detect/run.py            # 정규화 → Sigma·Suricata Alert 탐지 → seed (--out-seeds out/seeds.jsonl)
 ```
 
 ---

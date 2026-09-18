@@ -1,4 +1,6 @@
-"""detect/run.py — ① 정규화(4계층) → ② Sigma 매칭 → seed 를 한 번에 실행.
+"""detect/run.py — ① 정규화(4계층) → ② 탐지 → seed 를 한 번에 실행.
+
+Sigma 룰 매칭과 Suricata Alert 기반 탐지를 함께 수행한다.
 
 예)
   python detect/run.py                                   # .env 경로로 4계층 전부
@@ -18,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from detect.engine import detect  # noqa: E402
 from detect.loader import load_rules  # noqa: E402
+from detect.suricata_seed import build_suricata_seeds  # noqa: E402
 from tools.normalize import normalize_all  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -51,12 +54,23 @@ def main() -> int:
         print(f"[normalize] 저장: {args.out_normalized}")
 
     hits: dict[str, list] = defaultdict(list)
-    seeds = []
+    sigma_seeds = []
     for ev, rule, seed in detect(events, rules, args.window):
         hits[rule.name].append(ev)
-        seeds.append(seed)
+        sigma_seeds.append(seed)
 
-    print(f"\n[detect] seed {len(seeds)}건")
+    suricata_seeds, suricata_rejects = build_suricata_seeds(
+        events,
+        window_seconds=args.window,
+    )
+    seeds = sigma_seeds + suricata_seeds
+
+    print(
+        f"\n[detect] seed {len(seeds)}건 "
+        f"(Sigma {len(sigma_seeds)}건, Suricata {len(suricata_seeds)}건)"
+    )
+    if suricata_rejects:
+        print(f"[detect] Suricata Alert 제외 {len(suricata_rejects)}건")
     for r in rules:
         evs = hits.get(r.name, [])
         if not evs:

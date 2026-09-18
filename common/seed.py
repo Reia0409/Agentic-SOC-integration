@@ -12,7 +12,7 @@ build_seed(...)로 생성하고, validate(seed)로 검사한다.
 # --- 상수 -------------------------------------------------------------------
 VALID_ENTITY_TYPES = {"src_ip", "pid", "ppid"}   # 조인 방식 결정
 VALID_LAYERS = {"web", "network", "system", "auth"}
-VALID_SOURCES = {"sigma", "anomaly"}             # 조합 가능: ["sigma","anomaly"]
+VALID_SOURCES = {"sigma", "anomaly", "suricata"}  # 탐지 출처 조합
 VALID_SIGNAL_TAGS = {"exec", "webroot", "sensitive", "cloud_creds"}
 
 
@@ -25,7 +25,7 @@ def build_seed(entity_type, entity_value, window, layer,
 
     entity_type : "src_ip"|"pid"|"ppid" — 조인 방식 결정
     window      : [start_iso, end_iso] UTC — 조사 시간 범위
-    source      : ["sigma"] | ["anomaly"] | ["sigma","anomaly"]
+    source      : "sigma"/"anomaly"/"suricata" 중 하나 이상의 조합
     evidence_refs: 원본 로그 포인터 리스트 — 비면 안 됨(환각 방지)
     """
     return {
@@ -37,7 +37,7 @@ def build_seed(entity_type, entity_value, window, layer,
         "source": list(source),
         "reason": reason,
         "score_parts": {
-            "rule_severity": rule_severity,   # sigma일 때 (없으면 None)
+            "rule_severity": rule_severity,   # Sigma/Suricata 룰 기반 탐지(없으면 None)
             "deviation": deviation,           # anomaly일 때 (없으면 None)
             "layer_count": layer_count,       # 걸친 계층 수
         },
@@ -72,7 +72,7 @@ def validate(seed):
     # source
     src = seed.get("source")
     if not (isinstance(src, list) and src and set(src) <= VALID_SOURCES):
-        raise ValueError("source는 sigma/anomaly 조합 리스트")
+        raise ValueError("source는 sigma/anomaly/suricata 조합 리스트")
 
     # score_parts
     sp = seed.get("score_parts")
