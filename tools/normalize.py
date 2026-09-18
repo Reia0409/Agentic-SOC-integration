@@ -8,10 +8,9 @@ tools/normalize.py — ① 정규화 오케스트레이터
 원칙:
   - "raw → 공통스키마" 로직은 각 fetch_*_log 한 곳에만 존재(중복 파서 금지).
   - 여기서는 fan-out(계층별 호출) + merge + sort 만.
-  - 현재 계층: web(apache) + auth + network(suricata). system(audit)은 도구를 없애 제외
-    → 나중에 fetch_audit_log 를 만들면 여기 한 줄 + .env AUDIT_LOG_PATH 만 추가.
+  - 현재 계층: web(apache) + auth + network(suricata) + system(audit) 4계층.
 
-경로는 .env 에서 읽는다: APACHE_LOG_PATH / AUTH_LOG_PATH / SURICATA_LOG_PATH
+경로는 .env 에서 읽는다: APACHE_LOG_PATH / AUTH_LOG_PATH / SURICATA_LOG_PATH / AUDIT_LOG_PATH
 """
 
 import os
@@ -27,11 +26,11 @@ try:  # dotenv 선택 의존성
 except Exception:  # pragma: no cover
     pass
 
-# 파싱은 각 도구의 '순수 함수'를 직접 쓴다(@register 래퍼 말고). 현재 계층 3종.
+# 파싱은 각 도구의 '순수 함수'를 직접 쓴다(@register 래퍼 말고). 현재 계층 4종.
 from tools.fetch_apache_log import fetch_apache_log      # web
 from tools.fetch_auth_log import fetch_auth_log          # auth
 from tools.fetch_network_log import fetch_network_log    # network
-# system(audit)은 나중에: 여기에 `from tools.fetch_audit_log import fetch_audit_log` 추가
+from tools.fetch_audit_log import fetch_audit_log        # system
 
 
 def _ts_key(event):
@@ -59,23 +58,25 @@ def normalize_all(
     apache_path=None,
     auth_path=None,
     network_path=None,
+    audit_path=None,
     sort=True,
 ):
     """전 계층 raw 로그 → 공통스키마 이벤트 하나의 리스트로 정규화(fan-out + merge + sort).
 
     각 경로 생략 시 .env 에서 읽는다. 특정 계층만 넘기면 그 계층만 정규화된다.
-    현재 계층: web(apache) + auth + network(suricata). system(audit)은 나중에 추가.
+    현재 계층: web(apache) + auth + network(suricata) + system(audit).
     반환: list[dict] (공통스키마), sort=True면 timestamp(UTC) 오름차순.
     """
     apache_path = apache_path or os.getenv("APACHE_LOG_PATH")
     auth_path = auth_path or os.getenv("AUTH_LOG_PATH")
     network_path = network_path or os.getenv("SURICATA_LOG_PATH")
+    audit_path = audit_path or os.getenv("AUDIT_LOG_PATH")
 
     events = []
     events += _safe(fetch_apache_log, apache_path)    # web
     events += _safe(fetch_auth_log, auth_path)        # auth
     events += _safe(fetch_network_log, network_path)  # network
-    # system(audit)은 나중에: events += _safe(fetch_audit_log, audit_path)
+    events += _safe(fetch_audit_log, audit_path)      # system
 
     if sort:
         events.sort(key=_ts_key)  # 전 계층 공통 정렬축 = timestamp(UTC)

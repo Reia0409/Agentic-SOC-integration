@@ -1,0 +1,48 @@
+# 막는 공격: 웹셸 배치 — 웹루트에 실행 가능한 스크립트(.php/.phtml/.phar/.htaccess) 생성·수정
+# 탐지 근거: key=webroot + path 확장자 .php 류 + www-data + 비대화형 (webroot_write 의 고신뢰 부분집합, 9/14 is.php 실측)
+# 조인: apache_automated_webshell_upload(POST) 와 시간·IP 로 이어지는 지점
+title: Web Process Writes Executable Script Into Webroot
+id: 2c9e4b7d-6f1a-4d83-9e5b-8a3c1d7f4e20
+status: experimental
+description: >
+  www-data(uid=33)가 로그인 세션 없이 웹루트에 .php/.phtml/.phar 등 실행 가능한 스크립트를 씀.
+  웹셸 업로드·수정의 직접 신호. 정상 플러그인/테마 설치와는 access.log 상관으로 구분.
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1505/003/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_key:
+    layer_data.key: webroot
+  selection_ext:
+    layer_data.path|endswith:
+      - '.php'
+      - '.phtml'
+      - '.phar'
+      - '.php5'
+      - '.php7'
+      - '.phps'
+      - '.inc'
+      - '.htaccess'
+  selection_webuser_uid:
+    layer_data.uid: 33
+  selection_webuser_euid:
+    layer_data.euid: 33
+  filter_interactive:
+    layer_data.session_type: interactive
+  condition: selection_key and selection_ext and (selection_webuser_uid or selection_webuser_euid) and not filter_interactive
+fields:
+  - pid
+  - ppid
+  - layer_data.path
+  - layer_data.comm
+falsepositives:
+  - wp-admin 에서의 정상 플러그인/테마 설치·업데이트 (access.log 상관으로 구분)
+level: high
+tags:
+  - attack.persistence
+  - attack.t1505.003
+x_correlation_required: true

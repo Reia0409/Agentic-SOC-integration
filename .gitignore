@@ -23,3 +23,6 @@ audit.log
 .idea/
 .DS_Store
 Thumbs.db
+
+# 실행 산출물
+out/

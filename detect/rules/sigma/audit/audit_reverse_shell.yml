@@ -1,0 +1,49 @@
+# 막는 공격: 웹셸 다음 단계로 대화형 원격 셸 확보 (/dev/tcp, nc -e, socat, pty.spawn 등)
+# 탐지 근거: execve 인자에 리버스셸 관용구 + 비대화형. uid 제한 없음(어느 계정이든 비대화형 리버스셸은 비정상)
+# 검증: 양성 실측 없음 → 합성 케이스. 9/13·9/14 실로그 오탐 0
+title: Reverse Shell Command Pattern
+id: 3e7a9c1d-5b2f-4a6e-9d8c-4f1b6e2a8c73
+status: experimental
+description: >
+  execve 인자에 리버스셸 관용구(/dev/tcp, nc -e, socat exec, fsockopen, pty.spawn 등)가 포함됨.
+  로그인 세션 없이 실행되면 웹셸·취약점을 통한 원격 셸 확보 시도로 본다.
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1059/004/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_exec:
+    layer_data.syscall: execve
+  selection_pattern:
+    layer_data.exec_args|contains:
+      - '/dev/tcp/'
+      - '/dev/udp/'
+      - 'nc -e'
+      - 'ncat -e'
+      - 'nc.traditional -e'
+      - 'socat exec:'
+      - 'socat tcp'
+      - 'fsockopen('
+      - 'socket.socket('
+      - 'pty.spawn('
+      - 'bash -i'
+      - 'sh -i'
+      - 'mkfifo'
+  filter_interactive:
+    layer_data.session_type: interactive
+  condition: selection_exec and selection_pattern and not filter_interactive
+fields:
+  - pid
+  - ppid
+  - layer_data.uid
+  - layer_data.exec_args
+falsepositives:
+  - 관리자 자동화 스크립트의 socat/mkfifo 사용 (이 환경엔 없음)
+level: critical
+tags:
+  - attack.execution
+  - attack.t1059.004
+  - attack.command-and-control

@@ -31,8 +31,11 @@ LAYER_DATA_KEYS = {
                 "dest_ip", "dest_port", "transport_src_ip", "transport_src_port",
                 "transport_dest_port", "protocol",
                 "xff_raw", "xff_ips", "xff_resolution", "xff_status", "sensor_id"],
-    "system":  ["serial", "syscall", "key", "exe", "comm", "user", "cwd",
-                "exec_args", "success", "uid", "euid", "session_type"],
+    # system: tools/fetch_audit_log.py 출력에 맞춤. IP 없음(src_ip=None), 조인키는 pid/ppid.
+    #         path = PARENT 가 아닌 대표 PATH 항목, raw_lines = serial 묶음의 전체 줄번호(역추적).
+    "system":  ["serial", "record_types", "syscall", "key", "exe", "comm", "user", "cwd",
+                "exec_args", "argv", "proctitle", "path", "paths", "success", "exit",
+                "uid", "euid", "auid", "ses", "tty", "session_type", "arch", "raw_lines"],
     # auth: 실 auth_parser 출력에 맞춤. 원격 IP는 layer_data.rhost 가 아니라
     #       top-level src_ip(조인키)로 둔다(apache 와 일관). 룰은 src_ip 를 참조.
     "auth":    ["host", "program", "event", "result",

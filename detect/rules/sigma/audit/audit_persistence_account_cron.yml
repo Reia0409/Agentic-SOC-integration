@@ -1,0 +1,55 @@
+# 막는 공격: 침해 후 백도어 계정 생성·변경, crontab 심기, authorized_keys 조작
+# 탐지 근거: execve comm=useradd|usermod|chpasswd|passwd|crontab 등 또는 인자에 .ssh/authorized_keys + 비대화형. uid 제한 없음(권한 상승 뒤 root 실행 포함)
+# 주의: apt/dpkg postinst 의 `adduser --system`, EC2 sshd 의 AuthorizedKeysCommand 인자(9/13 533건) 제외. /etc/cron.d 직접 쓰기는 auditd -w 가 없어 못 봄
+# 조인: auth_login_account_created 의 useradd[pid] 와 pid 로 이어짐 (9/14 svcbackup)
+title: Account Creation or Cron Modification Without Interactive Session
+id: 9a1c3e5b-7d2f-4b8a-8c6e-2d4f6a8b0c15
+status: experimental
+description: >
+  로그인 세션 없이 계정 생성/변경(useradd, usermod, chpasswd 등) 또는 crontab 편집,
+  또는 authorized_keys 를 인자로 하는 명령이 실행됨. 침해 후 지속화(T1136, T1053.003, T1098.004) 신호.
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1136/001/
+  - https://attack.mitre.org/techniques/T1053/003/
+  - https://attack.mitre.org/techniques/T1098/004/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_exec:
+    layer_data.syscall: execve
+  selection_account:
+    layer_data.comm:
+      - useradd
+      - adduser
+      - usermod
+      - userdel
+      - chpasswd
+      - passwd
+      - crontab
+  selection_sshkey:
+    layer_data.exec_args|contains: '.ssh/authorized_keys'
+  filter_interactive:
+    layer_data.session_type: interactive
+  filter_pkg_system_user:
+    layer_data.exec_args|contains: '--system'
+  # EC2 의 sshd 는 `-o AuthorizedKeysCommand .../eic_run_authorized_keys` 를 인자로 달고 뜸(9/13 533건·9/14 118건 실측) → 제외
+  filter_sshd_self:
+    layer_data.comm: sshd
+  condition: selection_exec and (selection_account or selection_sshkey) and not filter_interactive and not filter_pkg_system_user and not filter_sshd_self
+fields:
+  - pid
+  - ppid
+  - layer_data.uid
+  - layer_data.exec_args
+falsepositives:
+  - 패키지 설치 스크립트의 시스템 계정 생성 (--system 필터로 제외)
+  - 구성관리 도구(ansible 등)의 비대화형 계정 관리 (이 환경엔 없음)
+level: high
+tags:
+  - attack.persistence
+  - attack.t1136.001
+  - attack.t1053.003
+  - attack.t1098.004

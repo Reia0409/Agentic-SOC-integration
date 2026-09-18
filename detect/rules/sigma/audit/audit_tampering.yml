@@ -1,0 +1,116 @@
+# 막는 공격: auditd 규칙 삭제·중지, suricata/ufw/apparmor/fail2ban/rsyslog 중지·마스크, 방화벽 해제, /etc/audit 편집
+# 탐지 근거: auditctl -D/-e 0, systemctl stop|disable|mask|restart(auditd), kill 대상 서비스, ufw disable, iptables -F, setenforce/aa-teardown, /etc/audit/ 편집. uid 제한 없음
+# 주의: logrotate 의 `systemctl kill -s HUP rsyslog` 제외. 근거: 9/13 07:49 needrestart 의 auditd 재시작 → 24h 감사 공백(침해 기록 전무)
+title: Audit or Security Service Tampering
+id: b7e1d4a9-6c2f-4b3e-8a7d-5f9c1e3b6d28
+status: experimental
+description: >
+  auditd 규칙 삭제/비활성(auditctl -D, -e 0), auditd·suricata·ufw·apparmor·fail2ban·rsyslog 서비스 중지/비활성/마스크/재시작,
+  /etc/audit 설정 삭제·편집, 방화벽 해제(ufw disable, iptables -F, nft flush), AppArmor/SELinux 해제.
+  감사·방어 계층 무력화(T1562.001, T1562.004, T1562.006).
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+  - https://attack.mitre.org/techniques/T1562/004/
+  - https://attack.mitre.org/techniques/T1562/006/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  # ── auditd 직접 ──
+  sel_auditctl:
+    layer_data.comm: auditctl
+    layer_data.exec_args|contains:
+      - ' -D'
+      - ' -e 0'
+      - ' -e0'
+      - '-a never'
+  sel_audit_config:
+    layer_data.comm:
+      - rm
+      - mv
+      - shred
+      - truncate
+      - sed
+      - vi
+      - vim
+      - nano
+      - tee
+    layer_data.exec_args|contains: '/etc/audit/'
+  sel_kill:
+    layer_data.comm:
+      - kill
+      - pkill
+      - killall
+    layer_data.exec_args|contains:
+      - auditd
+      - suricata
+      - rsyslog
+      - fail2ban
+  # ── 서비스 중지/비활성 (systemctl|service <verb> <svc>) ──
+  sel_service_stop:
+    layer_data.comm:
+      - systemctl
+      - service
+    layer_data.exec_args|contains:
+      - ' stop '
+      - ' disable '
+      - ' mask '
+      - ' kill '
+    layer_data.exec_args|re: 'auditd|suricata|ufw|apparmor|fail2ban|rsyslog|firewalld'
+  sel_auditd_restart:
+    layer_data.comm:
+      - systemctl
+      - service
+    layer_data.exec_args|contains|all:
+      - restart
+      - auditd
+  # ── 방화벽 / MAC ──
+  sel_ufw:
+    layer_data.comm:
+      - ufw
+      - ufw-init
+    layer_data.exec_args|contains:
+      - disable
+      - ' stop'
+      - ' flush'
+      - force-stop
+  sel_iptables:
+    layer_data.comm:
+      - iptables
+      - ip6tables
+      - iptables-legacy
+      - xtables-legacy-multi
+      - nft
+    layer_data.exec_args|contains:
+      - ' -F'
+      - ' -Z'
+      - 'flush ruleset'
+  sel_mac:
+    layer_data.comm:
+      - setenforce
+      - aa-teardown
+      - aa-disable
+  # logrotate 가 매일 00:00 `systemctl kill -s HUP rsyslog.service` 로 로그 재오픈 신호를 보냄(9/13 실측) → HUP 은 종료가 아니므로 제외
+  filter_hup_reload:
+    layer_data.exec_args|contains:
+      - '-s HUP'
+      - '--signal=HUP'
+      - '--signal HUP'
+  condition: 1 of sel_* and not filter_hup_reload
+fields:
+  - pid
+  - ppid
+  - layer_data.uid
+  - layer_data.session_type
+  - layer_data.exec_args
+falsepositives:
+  - 패키지 업그레이드 시 needrestart 의 auditd 재시작 (9/13 실측 — 오탐이 아니라 공백 원인이므로 알아야 함)
+  - 관리자의 수동 규칙 편집·서비스 재시작
+level: critical
+tags:
+  - attack.defense-evasion
+  - attack.t1562.001
+  - attack.t1562.004
+  - attack.t1562.006

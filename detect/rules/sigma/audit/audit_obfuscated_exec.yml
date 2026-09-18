@@ -1,0 +1,52 @@
+# 막는 공격: 웹셸 페이로드를 base64 디코드·인라인 인터프리터(python -c, php -r)·파이프(| sh) 로 실행
+# 탐지 근거: execve 인자에 디코드/인라인/파이프 패턴 + www-data + 비대화형
+# 검증: 양성 실측 없음 → 합성 케이스
+title: Web Process Executes Encoded or Inline-Interpreted Command
+id: 6d3f8a2c-1b7e-4c95-a4e8-9f2d5b7c3e81
+status: experimental
+description: >
+  www-data(uid=33)가 로그인 세션 없이 base64 디코드 후 실행, 인라인 인터프리터(python -c, perl -e, php -r),
+  또는 파이프로 셸에 넘기는(| sh) 형태의 명령을 실행. 웹셸 명령 난독화·페이로드 실행의 전형.
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1027/
+  - https://attack.mitre.org/techniques/T1140/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_exec:
+    layer_data.syscall: execve
+  selection_pattern:
+    layer_data.exec_args|contains:
+      - 'base64 -d'
+      - 'base64 --decode'
+      - 'python -c'
+      - 'python3 -c'
+      - 'perl -e'
+      - 'php -r'
+      - 'xxd -r'
+      - '| sh'
+      - '|sh'
+      - '| bash'
+      - '|bash'
+      - 'eval('
+  selection_webuser_uid:
+    layer_data.uid: 33
+  selection_webuser_euid:
+    layer_data.euid: 33
+  filter_interactive:
+    layer_data.session_type: interactive
+  condition: selection_exec and selection_pattern and (selection_webuser_uid or selection_webuser_euid) and not filter_interactive
+fields:
+  - pid
+  - ppid
+  - layer_data.exec_args
+falsepositives:
+  - WordPress/플러그인이 www-data 로 php -r 을 호출하는 경우 (실측 시 확인 필요)
+level: medium
+tags:
+  - attack.defense-evasion
+  - attack.t1027
+  - attack.t1140
