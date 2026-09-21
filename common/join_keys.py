@@ -14,9 +14,15 @@
 값 접근은 schema.get_field로 상단/ layer_data 어디에 있든 꺼낸다.
 """
 
+import os
+import sys as _sys
 from datetime import datetime
 
-from common.schema import get_field
+# 스크립트로 직접 실행돼도 레포 루트를 path 에 올려 top-level 패키지(common)를 찾게 한다.
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.lineage import build_process_index  # noqa: E402
+from common.schema import get_field  # noqa: E402
 
 # --- 정렬축 -----------------------------------------------------------------
 SORT_KEY = "timestamp"   # 전 계층 공통, UTC
@@ -26,7 +32,7 @@ JOIN_RULES = {
     "web_network":    "xff/src_ip + time_proximity",   # X-Request-ID 정밀조인 불가
     "web_system":     "time_proximity + www-data + pid_lineage",  # saddr 조인 폐기
     "system_auth":    "pid",                            # ses/auid 없음 → pid 단독
-    "webshell_local": "ppid->pid lineage",              # ses unset → 계보로만
+    "audit_lineage":  "ppid->pid lineage",              # ses unset → 계보로만 (구 webshell_local)
 }
 
 WWW_DATA_UID = 33   # www-data
@@ -81,12 +87,25 @@ def system_auth_match(sys_ev, auth_ev):
 
 
 # --- 4. 웹셸 로컬 (audit 내부, ppid→pid 계보) --------------------------------
-def same_process_lineage(ev_a, ev_b):
-    """두 audit 이벤트가 부모-자식 계보인가 (ses unset이라 계보로만 추적)."""
-    a_pid, a_ppid = ev_a.get("pid"), ev_a.get("ppid")
-    b_pid, b_ppid = ev_b.get("pid"), ev_b.get("ppid")
-    return (a_pid is not None and a_pid == b_ppid) or \
-           (b_pid is not None and b_pid == a_ppid)
+def same_process_lineage(ev_a, ev_b, index=None):
+    """두 audit 이벤트가 부모-자식 계보인가 (ses unset이라 계보로만 추적).
+
+    pid==ppid 번호만 보면 재부팅·PID 재사용으로 남남을 잇는 오연결이 난다. 그래서
+    common/lineage 의 "프로세스 인스턴스"(그 번호를 그 시간 동안 쓴 한 프로세스) 기준으로
+    판정한다. 판정 로직은 여기 한 곳(+ lineage 엔진)에만 둔다.
+
+      index : build_process_index(events) 결과. 사건 묶기처럼 이벤트 전체가 있을 때 넘기면
+              재부팅 경계(serial 리셋)·PID 재사용(ppid 변경)·시간 역행까지 걸러진다.
+      None  : 두 이벤트만으로 임시 인덱스를 만들어 짝 판정한다(기존 호출 호환).
+              시간 역행(부모가 자식보다 늦게 등장)은 걸러지지만, 다른 이벤트를 모르므로
+              재부팅·재사용은 가를 수 없다.
+    """
+    if index is None:
+        index = build_process_index([ev_a, ev_b])
+    inst_a, inst_b = index.instance_for_event(ev_a), index.instance_for_event(ev_b)
+    if inst_a is None or inst_b is None:
+        return False
+    return inst_a.parent_key == inst_b.key or inst_b.parent_key == inst_a.key
 
 
 # --- 정렬 --------------------------------------------------------------------
