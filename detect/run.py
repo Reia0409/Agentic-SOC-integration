@@ -36,6 +36,12 @@ def main() -> int:
     ap.add_argument("--out-normalized", help="정규화 이벤트 JSONL 저장 경로")
     ap.add_argument("--out-seeds", help="seed JSONL 저장 경로")
     ap.add_argument("--window", type=int, default=60, help="seed window 반경(초)")
+    ap.add_argument("--web-strong-window", type=float, default=1.0,
+                    help="Apache↔Suricata strong 결합 반경(초)")
+    ap.add_argument("--web-fallback-window", type=float, default=2.0,
+                    help="Apache↔Suricata fallback 결합 반경(초)")
+    ap.add_argument("--web-long-delay-window", type=float, default=900.0,
+                    help="Apache↔Suricata 장시간 검토 반경(초)")
     ap.add_argument("--show", type=int, default=3, help="룰별로 콘솔에 보여줄 매칭 예시 수")
     args = ap.parse_args()
 
@@ -62,6 +68,9 @@ def main() -> int:
     suricata_seeds, suricata_rejects = build_suricata_seeds(
         events,
         window_seconds=args.window,
+        web_strong_seconds=args.web_strong_window,
+        web_fallback_seconds=args.web_fallback_window,
+        web_long_delay_seconds=args.web_long_delay_window,
     )
     seeds = sigma_seeds + suricata_seeds
 

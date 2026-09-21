@@ -16,6 +16,12 @@ from detect.suricata_flow import (
     build_http_evidence_index,
     find_http_evidence_refs,
 )
+from detect.web_network_correlation import (
+    DEFAULT_FALLBACK_SECONDS as DEFAULT_WEB_FALLBACK_SECONDS,
+    DEFAULT_LONG_DELAY_SECONDS as DEFAULT_WEB_LONG_DELAY_SECONDS,
+    DEFAULT_STRONG_SECONDS as DEFAULT_WEB_STRONG_SECONDS,
+    build_web_network_correlation_index,
+)
 
 
 DEFAULT_WINDOW_SECONDS = 60
@@ -129,7 +135,7 @@ def _reject(event, reason, detail=None):
     return rejected
 
 
-def _team_metadata(event, signature_id):
+def _team_metadata(event, signature_id, web_network_correlations=None):
     """팀 Sigma Seed가 제공하는 계약 밖 보조 필드와 같은 형태를 만든다."""
     layer_data = event["layer_data"]
     detail = {
@@ -143,6 +149,8 @@ def _team_metadata(event, signature_id):
     ):
         if layer_data.get(key) is not None:
             detail[key] = layer_data[key]
+    if web_network_correlations:
+        detail["web_network_correlations"] = web_network_correlations
     return {
         "rule_id": str(signature_id),
         "rule_name": "suricata_%s" % signature_id,
@@ -150,7 +158,13 @@ def _team_metadata(event, signature_id):
     }
 
 
-def build_suricata_seeds(events, window_seconds=DEFAULT_WINDOW_SECONDS):
+def build_suricata_seeds(
+    events,
+    window_seconds=DEFAULT_WINDOW_SECONDS,
+    web_strong_seconds=DEFAULT_WEB_STRONG_SECONDS,
+    web_fallback_seconds=DEFAULT_WEB_FALLBACK_SECONDS,
+    web_long_delay_seconds=DEFAULT_WEB_LONG_DELAY_SECONDS,
+):
     """정규화 Event 목록에서 Suricata Seed와 reject 목록을 만든다.
 
     반환값은 ``(seeds, rejects)``다. 함수는 입력 순서와 무관하게 같은 결과를
@@ -161,9 +175,16 @@ def build_suricata_seeds(events, window_seconds=DEFAULT_WINDOW_SECONDS):
     if window_seconds <= 0:
         raise ValueError("window_seconds는 양수여야 함")
 
+    events = list(events)
     groups = defaultdict(list)
     rejects = []
     http_evidence_index = build_http_evidence_index(events)
+    web_network_index = build_web_network_correlation_index(
+        events,
+        strong_seconds=web_strong_seconds,
+        fallback_seconds=web_fallback_seconds,
+        long_delay_seconds=web_long_delay_seconds,
+    )
 
     for event in events:
         if not isinstance(event, dict):
@@ -200,12 +221,25 @@ def build_suricata_seeds(events, window_seconds=DEFAULT_WINDOW_SECONDS):
         timestamp, _, entity_ip, representative = records[0]
         grouped_events = [record[3] for record in records]
         evidence_refs = {record[1] for record in records}
+        web_network_correlations = {}
         for grouped_event in grouped_events:
-            evidence_refs.update(find_http_evidence_refs(
+            http_refs = find_http_evidence_refs(
                 grouped_event,
                 http_evidence_index,
-            ))
+            )
+            evidence_refs.update(http_refs)
+            for http_ref in http_refs:
+                correlation = web_network_index.get(http_ref)
+                if correlation is None:
+                    continue
+                web_network_correlations[http_ref] = correlation
+                if correlation["join_status"] == "strong":
+                    evidence_refs.update(correlation["evidence_refs"])
         evidence_refs = sorted(evidence_refs)
+        correlations = [
+            web_network_correlations[raw_ref]
+            for raw_ref in sorted(web_network_correlations)
+        ]
         layer_data = representative["layer_data"]
         signature_id = layer_data.get("signature_id")
         signature = _safe_signature(layer_data.get("signature"), signature_id)
@@ -226,7 +260,7 @@ def build_suricata_seeds(events, window_seconds=DEFAULT_WINDOW_SECONDS):
             signal_tags=[],
             evidence_refs=evidence_refs,
         )
-        seed.update(_team_metadata(representative, signature_id))
+        seed.update(_team_metadata(representative, signature_id, correlations))
         try:
             validate_seed(seed)
         except ValueError as exc:
