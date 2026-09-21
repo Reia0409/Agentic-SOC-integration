@@ -13,7 +13,9 @@ tools/normalize.py — ① 정규화 오케스트레이터
 경로는 .env 에서 읽는다: APACHE_LOG_PATH / AUTH_LOG_PATH / SURICATA_LOG_PATH / AUDIT_LOG_PATH
 """
 
+import json
 import os
+import re
 from datetime import datetime, timezone
 
 # 스크립트로 직접 실행돼도 레포 루트를 path 에 올려 top-level 패키지(tools/common)를 찾게 한다.
@@ -83,6 +85,47 @@ def normalize_all(
     return events
 
 
+def _next_out_dir(out_root=None, now=None):
+    """out/YYYY-MM-DD-NNN 디렉토리를 만들고 생성된 경로를 반환한다."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out_root = out_root or os.path.join(repo_root, "out")
+    os.makedirs(out_root, exist_ok=True)
+
+    date_text = (now or datetime.now().astimezone()).strftime("%Y-%m-%d")
+    name_pattern = re.compile(r"^%s-(\d{3})$" % re.escape(date_text))
+    used_numbers = []
+    for name in os.listdir(out_root):
+        match = name_pattern.match(name)
+        if match and os.path.isdir(os.path.join(out_root, name)):
+            used_numbers.append(int(match.group(1)))
+
+    number = max(used_numbers, default=0) + 1
+    while True:
+        result_dir = os.path.join(out_root, "%s-%03d" % (date_text, number))
+        try:
+            os.mkdir(result_dir)
+            return result_dir
+        except FileExistsError:
+            number += 1
+
+
+def save_normalized_events(events, out_root=None, now=None):
+    """정규화 이벤트를 실행별 디렉토리의 계층별 JSONL 파일로 저장한다."""
+    result_dir = _next_out_dir(out_root=out_root, now=now)
+    grouped = {}
+    for event in events:
+        grouped.setdefault(event["layer"], []).append(event)
+
+    counts = {}
+    for layer, layer_events in sorted(grouped.items()):
+        output_path = os.path.join(result_dir, "%s.jsonl" % layer)
+        with open(output_path, "w", encoding="utf-8") as output:
+            for event in layer_events:
+                output.write(json.dumps(event, ensure_ascii=False) + "\n")
+        counts[layer] = len(layer_events)
+    return result_dir, counts
+
+
 if __name__ == "__main__":
     evs = normalize_all()
     by_layer = {}
@@ -91,3 +134,5 @@ if __name__ == "__main__":
     print("정규화 이벤트 %d건, 계층별=%s" % (len(evs), by_layer))
     for e in evs[:5]:
         print("  %s  %-7s %s" % (e["timestamp"], e["layer"], e["raw_ref"]))
+    result_dir, saved_by_layer = save_normalized_events(evs)
+    print("저장 완료: %s (계층별=%s)" % (result_dir, saved_by_layer))

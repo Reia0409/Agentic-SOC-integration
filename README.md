@@ -34,6 +34,9 @@ Raw Log (apache access.log / auth.log / suricata eve.json / auditd audit.log)
 ├── detect/                     # ② 탐지
 │   ├── loader.py               #   룰 로더 (yml → Rule, condition 문법 검증)
 │   ├── engine.py               #   매칭 엔진 (필드 3단계 탐색, logsource 라우팅, seed 생성)
+│   ├── suricata_flow.py        #   sensor/flow/tx 기반 Alert↔HTTP 연결
+│   ├── web_network_correlation.py # Apache↔Suricata HTTP 결합
+│   ├── suricata_seed.py        #   Suricata Alert seed + 교차계층 증거
 │   ├── run.py                  #   정규화 → 탐지 → seed 실행 진입점
 │   ├── rules/sigma/            #   활성 룰 (로더가 재귀로 읽음)
 │   │   ├── apache/  (룰 4)     #   web 탐지 룰
@@ -89,8 +92,8 @@ SERVER_PUBLIC_IP=54.180.11.0                # 자기호출(wp-cron) 제외용
 
 실행 (레포 루트에서):
 ```bash
-python tools/normalize.py       # 4계층 정규화 → 병합·정렬된 이벤트 스트림
-python detect/run.py            # 정규화 → Sigma 매칭 → seed (--out-seeds out/seeds.jsonl 로 저장)
+python tools/normalize.py       # 4계층 정규화 → out/ 아래 계층별 JSONL 저장
+python detect/run.py            # 정규화 → Sigma·Suricata Alert 탐지 → seed (--out-seeds out/seeds.jsonl)
 ```
 
 ---
@@ -111,6 +114,27 @@ python detect/run.py            # 정규화 → Sigma 매칭 → seed (--out-see
 - **조인키(src_ip/pid/ppid)는 top-level, 계층 고유값은 layer_data.** 계층별 키는 `common/schema.py`.
 - 새 파서를 붙일 때 **도구 계약**: `fetch_<계층>_log(log_path, …) -> list[dict]` + `@register` + `success/failure`.
 
+## Apache–Suricata 결합
+
+Suricata Alert는 먼저 `sensor_id + flow_id + tx_id`로 같은 Suricata HTTP 이벤트에 연결된다.
+`tx_id`가 없을 때만 같은 flow·전송 튜플·±5초 안의 유일한 HTTP 이벤트를 보수적으로 사용한다.
+이후 HTTP 이벤트의 XFF 기반 `src_ip`와 Apache `%a`를 표준 IP로 비교하고, UTC 시각과
+`method/path/status`를 함께 사용해 다음 등급으로 판정한다.
+
+| 등급 | 기본 조건 | seed 처리 |
+| --- | --- | --- |
+| `strong` | 동일 IP, ±1초, method/path/status 일치, 후보 1건 | Apache `raw_ref`를 `evidence_refs`에 자동 편입 |
+| `ambiguous_cluster` | strong 조건 후보가 여러 건 | 후보만 보존, 자동 편입 안 함 |
+| `context_only` | ±2초 fallback, 요청 필드 불일치, ±900초 장시간 정확 후보, XFF 결측 후보 | 상세 메타데이터로만 보존 |
+| `unmatched` | 후보 없음, timestamp 오류, XFF invalid/conflict | 미결합 사유 보존 |
+
+XFF가 없는 경우 IP 독립 검증이 불가능하므로 `strong`으로 승격하지 않는다. XFF가
+`invalid` 또는 `conflict`이면 IP 없는 fallback도 수행하지 않는다. 판정 결과는 Suricata
+seed의 `detail.web_network_correlations`에 기록된다.
+
+기본 결합 창은 `detect/run.py`의 `--web-strong-window`, `--web-fallback-window`,
+`--web-long-delay-window`로 조정할 수 있다. 이 값은 seed 자체의 `--window`와 독립적이다.
+
 ## 검증
 
 - **파서**: 계층별 샘플 + 실데이터로 파싱, 공통 스키마 strict 검증 통과.
@@ -118,6 +142,8 @@ python detect/run.py            # 정규화 → Sigma 매칭 → seed (--out-see
 - **룰↔파서**: apache 공격 4/4 발화·정상 오탐 0, auth 공격 9룰 발화·필드 커버리지 100%.
 - **audit**: 실 표본 500줄 → 107 이벤트(strict 통과), uid=33(www-data) 이벤트가 없어 seed 0. 합성 침해 로그(21 이벤트) → 12룰 전부 발화, 음성 7건 오탐 0.
 - **엔진**: 룰 26개 로드(+ 보류 1), apache·auth·audit 룰이 한 엔진에서 발화, layer 라우팅, seed 계약(evidence_refs 필수) 확인.
+- **Suricata 결합**: Alert↔HTTP flow/transaction 연결과 Apache strong/ambiguous/context/unmatched,
+  IPv6 표준화, XFF 결측·충돌, strong 증거만 seed로 승격하는 경로를 단위 테스트로 확인.
 
 ## 알아둘 것 / 남은 것
 
