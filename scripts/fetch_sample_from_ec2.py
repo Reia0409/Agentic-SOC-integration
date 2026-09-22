@@ -20,12 +20,19 @@ scripts/local_e2e_test.py에 넣을 "신선한 샘플 로그"를 매번 수동�
   돌리면 ssh 키 경로가 안 맞아서 실패할 수 있다 (지난번 겪은 문제와 동일).
 - ubuntu 계정이 각 로그 파일 읽기용 sudo를 비밀번호 없이 쓸 수 있어야 한다
   (AWS 기본 ubuntu AMI는 보통 이렇게 설정돼 있음). 안 되면 -t 옵션 필요할 수 있음.
-- --all의 기본 경로(nginx/auth.log/suricata)는 Ubuntu 기본값 + 팀 아키텍처 확인 결과다.
+- --all의 기본 경로(apache/auth.log/suricata)는 Ubuntu 기본값 + 팀 아키텍처 확인 결과다.
   실제 서버가 다르면 SSH 접속해서 `ls /var/log/apache2/ /var/log/nginx/
   /var/log/suricata/ /var/log/auth.log*`로 확인 후 --web-path 등으로 바꿔주면 된다.
-  web은 nginx(리버스 프록시, 앞단이라 실제 클라이언트 IP가 찍힘)를 기본으로 썼다 —
-  apache는 nginx 뒤에 있어서 src_ip가 항상 loopback(127.0.0.1)로만 찍혀 공격자 IP를
-  알 수 없다 (팀 결정사항: Suricata 조인 키로 src_ip 대신 http.xff를 쓰는 것도 같은 이유).
+
+  *** 2026-09-22 업데이트: web 기본 경로를 nginx에서 apache로 변경 ***
+  예전엔(이 주석의 옛 버전) "apache는 nginx 뒤에 있어서 src_ip가 항상
+  loopback(127.0.0.1)로만 찍힌다"고 여겨서 nginx를 기본으로 썼었다. 그런데 EC2를
+  직접 SSH로 확인해보니, 지금은 apache에 mod_remoteip가 설정돼 있어서
+  access.log의 %a(client) 필드에 이미 실 클라이언트 IP가 복원되어 찍힌다 —
+  1차 탐지팀 fetch_apache_log.py도 바로 이 전제(EC2 실측 기반)로 설계돼 있고,
+  실제 access.log 포맷이 그 파서 컬럼 정의와 정확히 일치함을 확인했다. 그래서
+  web 계층은 이제 apache access.log를 기본으로 받는다(경로:
+  /var/log/apache2/access.log).
 """
 
 from __future__ import annotations
@@ -85,10 +92,15 @@ def fetch_all_layers(
     network_path: str,
 ) -> Dict[str, str]:
     """4계층(web/auth/audit/network) 샘플을 한 번에 받는다.
-    반환값: {"web": "sample_web.log", ...} — 실제로 받아진 것만 포함.
+    반환값: {"web": "sample_apache_web.log", ...} — 실제로 받아진 것만 포함.
+
+    2026-09-22: web 출력 파일명을 sample_web.log -> sample_apache_web.log로 변경.
+    기존 sample_logs/sample_web.log(nginx JSON)는 raw_log_ingestion.py의 아직
+    안 옮긴 web 수집 branch가 계속 쓰므로, 새로 받는 apache 샘플과 이름이
+    겹치면 실수로 덮어쓸 위험이 있다 — 그래서 다른 이름으로 분리한다.
     """
     layers: Tuple[Tuple[str, str, str], ...] = (
-        ("web", web_path, "sample_web.log"),
+        ("web", web_path, "sample_apache_web.log"),
         ("auth", auth_path, "sample_auth.log"),
         ("audit", audit_path, "sample_audit.log"),
         ("network", network_path, "sample_network.log"),
@@ -115,7 +127,9 @@ def main() -> None:
     parser.add_argument("--lines", type=int, default=500)
     parser.add_argument("--all", action="store_true", help="web/auth/audit/network 4계층 전부 받기")
     # --all 모드 전용 경로 (Ubuntu 기본값 추정 — 실제 서버 확인 후 필요시 조정)
-    parser.add_argument("--web-path", default="/var/log/nginx/access.log")
+    # 2026-09-22: web 기본을 nginx -> apache로 변경 (mod_remoteip로 실 클라이언트
+    # IP가 apache 레벨에서 복원됨을 SSH로 확인 — 파일 상단 docstring 참고)
+    parser.add_argument("--web-path", default="/var/log/apache2/access.log")
     parser.add_argument("--auth-path", default="/var/log/auth.log")
     parser.add_argument("--network-path", default="/var/log/suricata/eve.json")
     # --all 아닐 때(단일 파일) 전용

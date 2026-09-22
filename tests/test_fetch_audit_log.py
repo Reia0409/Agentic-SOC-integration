@@ -7,16 +7,32 @@
 - audit(EPOCH:SERIAL)의 EPOCH로 시간 필터링이 되는지
 - pid/user 필터가 되는지
 - 오브젝트가 하나도 없을 때의 안내 메시지
-가 맞는지 검증한다. (2026-09-13: 팀원이 만든 정식 파서(_audit_parser.py)로 교체됨)
+가 맞는지 검증한다.
+
+2026-09-22 (B: 조사 도구 담당) 업데이트: fetch_audit_log가 자체 파서(parsers/audit_parser.py)
+대신 1차 탐지팀 공통 정규화 함수(agent/tools/normalizer_adapter.py)를 쓰도록 바뀌었다.
+session_type 판정 방식도 바뀌었다 — 예전엔 auid만 보고 판정했지만(auid unset=non_interactive),
+1차 탐지팀 코드는 EC2 실측(decisions-and-learnings.md에 기록됨)에 따라 ses/tty 둘 다
+unset일 때만 non_interactive로 판정한다. 그래서 인터랙티브 세션 fixture에 ses=/tty=도
+추가했다(실제 auditd 로그의 인터랙티브 SYSCALL 레코드엔 항상 있는 필드라 더 사실적이다).
 
 pytest 없이도 저장소 루트에서 `python -m tests.test_fetch_audit_log`로 실행 가능.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from typing import Any, Dict, List
+
+# normalizer 벤더 코드가 import 시점에 load_dotenv()를 호출하는 문제 회피
+# (test_fetch_auth_log.py 상단 주석 참고 — 이 파일도 agent/tools/real/fetch_audit_log.py
+# 를 통해 normalizer.adapter → normalizer.tools.fetch_auth_log를 같이 import하므로
+# 똑같이 영향을 받는다).
+import agent.tools.real.fetch_audit_log as _load_dotenv_trigger  # noqa: F401
+for _env_name in ("AUTH_LOG_LOCAL_PATH", "AUDIT_LOG_LOCAL_PATH", "WEB_LOG_LOCAL_PATH", "NETWORK_LOG_LOCAL_PATH"):
+    os.environ.pop(_env_name, None)
 
 
 class _FakeBody:
@@ -73,8 +89,8 @@ GS = "\x1d"  # ENRICHED 구분자
 
 
 def _sample_audit_text() -> bytes:
-    """ENRICHED 포맷 웹셸 이벤트(pid=3812, www-data, non_interactive) +
-    관리자 SSH 이벤트(pid=1234, 시간 범위 밖, interactive) 2건.
+    """ENRICHED 포맷 웹셸 이벤트(pid=3812, www-data, ses/tty 없음→non_interactive) +
+    관리자 SSH 이벤트(pid=1234, 시간 범위 밖, ses=5·tty=pts0 있음→interactive) 2건.
     """
     return (
         f'type=SYSCALL msg=audit({_EPOCH_IN_RANGE}.123:5001): arch=c000003e syscall=59 '
@@ -83,7 +99,7 @@ def _sample_audit_text() -> bytes:
         f'type=EXECVE msg=audit({_EPOCH_IN_RANGE}.123:5001): argc=1 a0="sh"\n'
         f'type=CWD msg=audit({_EPOCH_IN_RANGE}.123:5001):  cwd="/var/www/html"\n'
         f'type=SYSCALL msg=audit({_EPOCH_OUT_OF_RANGE}.001:4000): arch=c000003e syscall=59 '
-        f'success=yes exit=0 pid=1234 ppid=1 auid=1000 uid=0 euid=0 comm="bash" '
+        f'success=yes exit=0 pid=1234 ppid=1 auid=1000 uid=0 euid=0 ses=5 tty=pts0 comm="bash" '
         f'exe="/bin/bash" key="sensitive"{GS}SYSCALL SYSCALL=execve UID="root"\n'
     ).encode("utf-8")
 
@@ -196,7 +212,7 @@ def test_fetch_audit_log_exclude_interactive() -> None:
                 "exclude_interactive": True,
             }
         )
-        # root(auid=1000, interactive)는 빠지고 www-data(non_interactive)만 남아야 함
+        # root(ses=5, tty=pts0 → interactive)는 빠지고 www-data(ses/tty 없음 → non_interactive)만 남아야 함
         assert result["count"] == 1
         assert result["records"][0]["session_type"] == "non_interactive"
         print("[PASS] test_fetch_audit_log_exclude_interactive")

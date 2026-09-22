@@ -1,17 +1,22 @@
-﻿"""get_process_tree 실제 구현 - audit 이벤트의 pid/ppid로 조상 체인을 추적한다.
+"""get_process_tree 실제 구현 - audit 이벤트의 pid/ppid로 조상 체인을 추적한다.
 
 파일명 == 함수명 규칙에 따라 agent/tools/real/get_process_tree.py 안의
 get_process_tree 함수만 있으면 agent/tools/registry.py의 build_default_registry()가
 자동으로 이 함수를 mock_tools.py 대신 사용한다.
 
-*** 2026-09-14: 드디어 실제 구현 완성 ***
-이전엔 "살아있는 프로세스 상태가 필요해서 정적 로그로 흉내내기 어렵다"고 보류했던
-도구다. 팀원이 만든 get_process_tree.py(독립 배포용)를 보고, audit 로그 자체에
-pid/ppid가 이미 들어있어서(팀원이 만든 audit_parser.py로 이미 구조화해둔 값)
-"살아있는 프로세스 목록"이 아니라 "과거에 관측된 pid/ppid 관계를 되짚는" 방식으로
-가능하다는 걸 확인해서 완성했다. 그래서 fetch_audit_log.py와 정확히 같은 audit
-로그 소스(S3/로컬)를 그대로 읽고, agent/tools/parsers/audit_parser.py로 파싱한 뒤
-agent/tools/parsers/process_tree.py로 조상 체인만 추가로 추적한다.
+*** 2026-09-22 업데이트 (마지막 남은 audit_parser.py 사용처도 공통 정규화 함수로 교체) ***
+자체 파서(parsers/audit_parser.py)를 버리고 1차 탐지팀 공통 정규화 함수
+(agent/tools/normalizer_adapter.py → normalizer/tools/fetch_audit_log.py)를 쓰도록
+교체했다 — fetch_audit_log.py(B)와 완전히 같은 소스를 본다. 이걸로 parsers/audit_parser.py
+는 진짜로 아무도 안 부르게 됐다(이제 삭제해도 된다).
+
+*** 2026-09-23 업데이트: build_ancestry_chain()을 parsers/process_tree.py에서 이 파일로 합침 ***
+그 함수를 쓰는 곳이 여기 하나뿐이라 별도 폴더(parsers/)로 분리해둘 이유가 없어져서
+(parsers/에 남은 게 이 파일 하나였음 — agent/tools/parsers/README.md 참고) 그대로
+이 파일 안으로 옮겼다. build_ancestry_chain()이 기대하는 필드(pid/ppid/timestamp/
+exe/comm/user/syscall/session_type/raw_ref)는 1차 탐지팀 공통스키마를 _flatten()한
+결과에도 전부 그대로 있어서(exe/comm/user/syscall/session_type은 layer_data 안에
+있다가 top-level로 펼쳐짐), 로직 자체는 옮기면서도 손댈 필요가 없었다.
 
 *** 주의: "확정된 프로세스 생성 트리"가 아니라 "관측 기반 후보"다 ***
 audit 로그에 그 pid의 syscall이 안 찍혀 있으면(로그 보관 기간 밖이거나, 아직 조회
@@ -19,51 +24,126 @@ audit 로그에 그 pid의 syscall이 안 찍혀 있으면(로그 보관 기간 
 멀리 떨어진 별개의 관측이 잘못 이어질 위험도 있다 — 그래서 이 tool의 결과에는
 warnings에 이런 한계를 항상 명시한다.
 
-필요 환경변수: fetch_audit_log.py와 동일 (AWS_ACCESS_KEY_ID 등, AUDIT_LOG_BUCKET)
+원본(1차 탐지팀) 대비 단순화한 것: 원본은 boot_id/scope(재부팅 경계) 구분, PID
+재사용 방지, 동시 확보된 여러 후보 중 모호성 처리까지 정교하게 했다. 우리는
+"가장 최근 관측된 그 pid의 부모를 시간 역순으로 따라간다"는 단순한 버전만
+구현한다 — 조사 목적(웹셸이 어떤 프로세스에서 실행됐는지 등)엔 이 정도로도
+충분하고, boot_id 같은 정보는 공통스키마에 애초에 없다.
+
+필요 환경변수: fetch_audit_log.py와 동일 (agent/tools/normalizer_adapter.py 문서 참고)
 로컬 테스트: .env에 AUDIT_LOG_LOCAL_PATH=sample_audit.log (fetch_audit_log.py와 공유)
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from ..parsers.audit_parser import parse_audit_events
-from ..parsers.process_tree import build_ancestry_chain
-from ._s3_common import daterange, list_and_read_text
+from ..normalizer_adapter import normalize_audit
 from ..time_utils import parse_iso
 
-DEFAULT_BUCKET = "ogwanwan-shop-bucket"
 DEFAULT_LOOKBACK_HOURS = 24  # 조상을 찾을 때 얼마나 과거까지 audit 로그를 훑을지
+MAX_ANCESTORS = 32
 
 
-def _read_source_text(host: str, start: datetime, end: datetime) -> "tuple[str, int, str]":
-    """fetch_audit_log.py와 동일한 소스(AUDIT_LOG_LOCAL_PATH 또는 S3)를 읽는다."""
-    local_path = os.environ.get("AUDIT_LOG_LOCAL_PATH")
-    if local_path:
-        if not os.path.exists(local_path):
-            return "", 0, f"local:{local_path} (파일 없음)"
-        with open(local_path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read(), 1, f"local:{local_path}"
+def build_ancestry_chain(
+    events: List[Dict[str, Any]],
+    target_pid: int,
+    max_ancestors: int = MAX_ANCESTORS,
+) -> Optional[Dict[str, Any]]:
+    """구조화된 audit 이벤트 리스트(pid/ppid/exe/user/timestamp 등)에서, target_pid의
+    조상 체인(부모 -> 조부모 -> ...)을 시간 역순으로 추적한다.
 
-    import boto3  # 실제 호출 시에만 필요하므로 지연 import
+    이벤트가 이미 timestamp 오름차순 정렬돼 있다고 가정한다. target_pid가
+    하나도 관측 안 됐으면 None을 반환한다.
 
-    bucket = os.environ.get("AUDIT_LOG_BUCKET", DEFAULT_BUCKET)
-    s3 = boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION"))
+    (2026-09-23: agent/tools/parsers/process_tree.py에서 이 파일로 이동 — 여기서만
+    쓰이는 함수라 별도 폴더로 분리해둘 이유가 없어졌다.)
+    """
+    # pid별로 관측된 이벤트들을 시간순으로 모아둔다 (부모 찾을 때 "그 시점 이전의
+    # 가장 최근 관측"을 써야 하므로).
+    by_pid: Dict[int, List[Dict[str, Any]]] = {}
+    for e in events:
+        pid = e.get("pid")
+        if pid is not None:
+            by_pid.setdefault(pid, []).append(e)
 
-    chunks: List[str] = []
-    scanned_objects = 0
-    for date_str in daterange(start, end):
-        prefix = f"raw/source_type=auditd/host={host}/dt={date_str}/"
-        text, count = list_and_read_text(s3, bucket, prefix)
-        scanned_objects += count
-        chunks.append(text)
-    return (
-        "\n".join(chunks),
-        scanned_objects,
-        f"s3://{bucket}/raw/source_type=auditd/host={host}/",
-    )
+    target_events = by_pid.get(target_pid)
+    if not target_events:
+        return None
+
+    # target_pid의 가장 최근 관측을 시작점으로 삼는다.
+    leaf = target_events[-1]
+
+    chain: List[Dict[str, Any]] = [leaf]
+    visited_pids = {target_pid}
+    warnings: List[str] = [
+        "PID_REUSE_NOT_RESOLVED",
+        "관측된 syscall 기반 추정이며 실시간 프로세스 목록이 아님",
+    ]
+    stop_reason = "parent_pid_zero"
+
+    current = leaf
+    while True:
+        ppid = current.get("ppid")
+        if ppid is None or ppid == 0:
+            stop_reason = "parent_pid_zero"
+            break
+        if ppid in visited_pids:
+            stop_reason = "cycle_detected"
+            warnings.append("PID_CYCLE_DETECTED")
+            break
+        if len(chain) >= max_ancestors:
+            stop_reason = "depth_limit"
+            warnings.append("ANCESTOR_DEPTH_LIMIT")
+            break
+
+        parent_events = by_pid.get(ppid)
+        if not parent_events:
+            stop_reason = "parent_not_observed"
+            warnings.append("PARENT_NOT_OBSERVED_IN_LOG_WINDOW")
+            break
+
+        # 현재 노드 시점보다 이전(또는 같은) 시점의 가장 최근 관측을 부모로 삼는다.
+        candidates = [p for p in parent_events if (p.get("timestamp") or "") <= (current.get("timestamp") or "")]
+        parent = candidates[-1] if candidates else parent_events[0]
+
+        chain.append(parent)
+        visited_pids.add(ppid)
+        current = parent
+
+    return {
+        "target_pid": target_pid,
+        "chain": " -> ".join(f"{n.get('exe') or n.get('comm')}({n.get('pid')})" for n in chain),
+        "nodes": [
+            {
+                "pid": n.get("pid"),
+                "ppid": n.get("ppid"),
+                "timestamp": n.get("timestamp"),
+                "exe": n.get("exe"),
+                "comm": n.get("comm"),
+                "user": n.get("user"),
+                "syscall": n.get("syscall"),
+                "session_type": n.get("session_type"),
+                "raw_ref": n.get("raw_ref"),
+            }
+            for n in chain
+        ],
+        "lineage_status": "inferred" if stop_reason == "parent_pid_zero" else "partial",
+        "stop_reason": stop_reason,
+        "warnings": warnings,
+    }
+
+
+def _flatten(event: Dict[str, Any]) -> Dict[str, Any]:
+    """공통스키마 {timestamp, layer, raw_ref, src_ip, pid, ppid, layer_data:{...}} 를
+    LLM이 읽기 편하도록 layer_data를 top-level에 펼친 평평한 dict 하나로 만든다.
+    (agent/tools/real/fetch_audit_log.py의 _flatten()과 동일한 규칙 — build_ancestry_chain()이
+    기대하는 exe/comm/user/syscall/session_type 필드가 여기서 top-level로 올라온다.)
+    """
+    flat = {k: v for k, v in event.items() if k != "layer_data"}
+    flat.update(event.get("layer_data") or {})
+    return flat
 
 
 def get_process_tree(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,27 +155,28 @@ def get_process_tree(args: Dict[str, Any]) -> Dict[str, Any]:
     # 범위"로 넓게 잡는다 — 로컬 샘플 모드에선 어차피 파일 하나가 전부라 큰 의미
     # 없고, S3 모드에서 실제로 유효해진다.
     if "start_time" in args and "end_time" in args:
-        start = parse_iso(args["start_time"])
-        end = parse_iso(args["end_time"])
+        start_time, end_time = args["start_time"], args["end_time"]
     elif "timestamp" in args:
         anchor = parse_iso(args["timestamp"])
-        start = anchor - timedelta(hours=DEFAULT_LOOKBACK_HOURS)
-        end = anchor
+        start_time = (anchor - timedelta(hours=DEFAULT_LOOKBACK_HOURS)).isoformat().replace("+00:00", "Z")
+        end_time = args["timestamp"]
     else:
         end = datetime.now(timezone.utc)
         start = end - timedelta(hours=DEFAULT_LOOKBACK_HOURS)
+        start_time = start.isoformat().replace("+00:00", "Z")
+        end_time = end.isoformat().replace("+00:00", "Z")
 
-    text, scanned_objects, source_label = _read_source_text(host, start, end)
+    events = normalize_audit(host, start_time, end_time)  # 필터 없이 전부 — pid/ppid 관계를 다 확보
+    flat_events = [_flatten(e) for e in events]
 
-    events = parse_audit_events(text)  # 필터 없이 전부 파싱해서 pid/ppid 관계를 다 확보
-
-    chain = build_ancestry_chain(events, target_pid=pid)
-
-    if scanned_objects == 0:
+    if not flat_events:
         summary = (
-            f"{source_label} 에서 데이터를 찾지 못했습니다. host 이름 또는 로컬 파일 경로를 확인하세요."
+            f"{host}의 {start_time}~{end_time} 구간에서 audit 데이터를 찾지 못했습니다. "
+            "host 이름, 기간, 또는 AUDIT_LOG_LOCAL_PATH/AUDIT_LOG_BUCKET 설정을 확인하세요."
         )
         return {"count": 0, "summary": summary, "records": []}
+
+    chain = build_ancestry_chain(flat_events, target_pid=pid)
 
     if chain is None:
         summary = f"pid={pid}에 대한 audit 관측 기록을 이 조회 구간에서 찾지 못했습니다."
@@ -104,7 +185,7 @@ def get_process_tree(args: Dict[str, Any]) -> Dict[str, Any]:
     summary = (
         f"pid={pid}의 조상 체인 추적 완료: {chain['chain']} "
         f"(상태: {chain['lineage_status']}, 근거: 관측된 audit syscall 기반 — "
-        "확정된 프로세스 생성 트리가 아닌 후보임)"
+        "확정된 프로세스 생성 트리가 아닌 후보임, 1차 탐지팀 공통 정규화 함수 사용)"
     )
 
     return {"count": 1, "summary": summary, "records": [chain]}

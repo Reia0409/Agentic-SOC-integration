@@ -1,120 +1,95 @@
-﻿"""fetch_network_log 실제 구현 - Suricata eve.json을 읽어온다 (S3 또는 로컬 파일).
+"""fetch_network_log 실제 구현 - Suricata eve.json을 읽어온다 (S3 또는 로컬 파일).
 
 파일명 == 함수명 규칙에 따라 agent/tools/real/fetch_network_log.py 안의
 fetch_network_log 함수만 있으면 agent/tools/registry.py의 build_default_registry()가
 자동으로 이 함수를 mock_tools.py 대신 사용한다.
 
-*** 2026-09-14 업데이트: 팀원이 만든 독립 배포용 fetch_network_log.py에서
-    핵심 필터링 로직을 뽑아 parsers/network_parser.py로 만들고 그걸 감쌌다 ***
-audit/web/auth와 같은 패턴: 파싱/필터링 로직은 팀원이 만든 걸 기반으로 하고
-(parsers/network_parser.py), 이 파일은 S3/로컬 소스 선택 + 우리 tool 인터페이스
-(args dict → {count, summary, records})만 담당한다.
+*** 2026-09-22 업데이트 (network 계층도 1차 탐지팀 공통 정규화 함수로 교체) ***
+자체 파서(parsers/network_parser.py)를 버리고 1차 탐지팀 공통 정규화 함수
+(agent/tools/normalizer_adapter.py → normalizer/tools/fetch_network_log.py)를 쓰도록
+교체했다. 완료 기준(같은 raw 로그에 대해 1차 탐지와 에이전트 도구가 동일한 정규화
+결과를 반환해야 한다)을 지키기 위해, S3/로컬 소스 선택과 파싱은 전부
+normalizer.adapter.normalize_network()에 맡긴다. Suricata eve.json 포맷 자체는
+parsers/network_parser.py 때와 동일한 소스라 형식 호환 문제는 없었다.
 
-원본과 달리 direction(internal/outbound/inbound) 계산은 안 한다 — 자세한 이유는
-parsers/network_parser.py 상단 주석 참고 (호스트 IP 사전 등록 단계가 우리
-시스템엔 없음).
+*** dst_ip/src_port/dst_port/protocol 필터는 공통 정규화 함수에 없어서 여기서 후처리 ***
+1차 탐지팀 fetch_network_log()의 필터는 time_window/src_ip/event_type/flow_id/
+signature 뿐이라(dst_ip·src_port·dst_port·protocol 없음), 예전과 동일하게 이 파일이
+결과를 받은 뒤 그 조건으로 한 번 더 걸러준다. alert_only는 event_type="alert"로
+그대로 정규화 함수에 넘긴다.
 
-*** limit/offset 페이지네이션 채택 (auth와 동일한 이유) ***
+*** direction(internal/outbound/inbound) 계산은 여전히 안 함 ***
+예전 parsers/network_parser.py와 동일한 이유(호스트 IP 사전 등록 단계가 우리
+시스템엔 없음) — 1차 탐지팀 공통스키마에도 그 필드는 없다.
 
-*** 2026-09-17 업데이트: web↔network join 복구 (이 파일 자체는 무수정) ***
-Suricata가 nginx↔백엔드 사이 loopback 트래픽을 봐서 src_ip가 127.0.0.1 등으로
-찍히는 문제가 있었다 — 처음엔 "nginx 대신 apache를 써야 하나"로 오해했지만,
-실제 원인은 network_parser.py가 http.xff/url/http_method/status 필드를 아예
-안 뽑고 있었던 것이었다. 그래서 web 레이어(fetch_web_log.py)는 그대로 nginx
-파서를 유지하고, network_parser.py 쪽에 http 서브객체 파싱을 추가해서 src_ip
-필터가 xff도 함께 매칭하도록 고쳤다. 이 파일(tool wrapper)은 파서를 그대로
-호출만 하므로 변경 사항 없음 — 반환되는 records에 url/http_method/status/xff
-필드가 자동으로 추가되어 나온다.
+*** limit/offset 페이지네이션 유지 (auth/web과 동일한 이유) ***
 
-*** 2026-09-17 업데이트: 권한 에러 처리 ***
-로컬 파일이 root 소유라 비root 프로세스가 못 읽는 경우 PermissionError를
-명시적으로 잡아서 source_label에 "(권한 없음)"을 남긴다.
-
-필요 환경변수: AWS_ACCESS_KEY_ID 등 + NETWORK_LOG_BUCKET (기본값 ogwanwan-shop-bucket)
-로컬 테스트: .env에 NETWORK_LOG_LOCAL_PATH=sample_network.log
+필요 환경변수: agent/tools/normalizer_adapter.py 문서 참고
+  (.env에 NETWORK_LOG_LOCAL_PATH 있으면 로컬 파일, 없으면 NETWORK_LOG_BUCKET/S3)
 """
 
 from __future__ import annotations
 
-import os
-from datetime import datetime
 from typing import Any, Dict, List
 
-from ..parsers.network_parser import parse_network_events
-from ._s3_common import daterange, list_and_read_text
-from ..time_utils import parse_iso
-
-DEFAULT_BUCKET = "ogwanwan-shop-bucket"
-S3_SOURCE_TYPE = "suricata"
-DEFAULT_LIMIT = 200
+from ..normalizer_adapter import normalize_network
 
 
-def _read_source_text(host: str, start: datetime, end: datetime) -> "tuple[str, int, str]":
-    local_path = os.environ.get("NETWORK_LOG_LOCAL_PATH")
-    if local_path:
-        if not os.path.exists(local_path):
-            return "", 0, f"local:{local_path} (파일 없음)"
-        try:
-            with open(local_path, "r", encoding="utf-8", errors="replace") as f:
-                return f.read(), 1, f"local:{local_path}"
-        except PermissionError:
-            return "", 0, f"local:{local_path} (권한 없음)"
-
-    import boto3  # 실제 호출 시에만 필요하므로 지연 import
-
-    bucket = os.environ.get("NETWORK_LOG_BUCKET", DEFAULT_BUCKET)
-    s3 = boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION"))
-
-    chunks: List[str] = []
-    scanned_objects = 0
-    for date_str in daterange(start, end):
-        prefix = f"raw/source_type={S3_SOURCE_TYPE}/host={host}/dt={date_str}/"
-        text, count = list_and_read_text(s3, bucket, prefix)
-        scanned_objects += count
-        chunks.append(text)
-    return (
-        "\n".join(chunks),
-        scanned_objects,
-        f"s3://{bucket}/raw/source_type={S3_SOURCE_TYPE}/host={host}/",
-    )
+def _flatten(event: Dict[str, Any]) -> Dict[str, Any]:
+    """공통스키마 {timestamp, layer, raw_ref, src_ip, pid, ppid, layer_data:{...}} 를
+    LLM이 읽기 편하도록 layer_data를 top-level에 펼친 평평한 dict 하나로 만든다.
+    (agent/tools/real/fetch_audit_log.py·fetch_auth_log.py의 _flatten()과 동일한 규칙.)
+    """
+    flat = {k: v for k, v in event.items() if k != "layer_data"}
+    flat.update(event.get("layer_data") or {})
+    return flat
 
 
 def fetch_network_log(args: Dict[str, Any]) -> Dict[str, Any]:
     host = args["host"]
-    start = parse_iso(args["start_time"])
-    end = parse_iso(args["end_time"])
-    limit = int(args.get("limit", DEFAULT_LIMIT))
+    start_time = args["start_time"]
+    end_time = args["end_time"]
+    limit = int(args.get("limit", 200))
     offset = int(args.get("offset", 0))
 
-    text, scanned_objects, source_label = _read_source_text(host, start, end)
+    event_type = "alert" if args.get("alert_only") else None
 
-    all_events = parse_network_events(
-        text,
-        time_window=(start, end),
+    events = normalize_network(
+        host,
+        start_time,
+        end_time,
         src_ip=args.get("src_ip"),
-        dst_ip=args.get("dst_ip"),
-        src_port=args.get("src_port"),
-        dst_port=args.get("dst_port"),
-        protocol=args.get("protocol"),
-        alert_only=bool(args.get("alert_only", False)),
+        event_type=event_type,
     )
+    flat_events: List[Dict[str, Any]] = [_flatten(e) for e in events]
 
-    total_matched = len(all_events)
-    page = all_events[offset : offset + limit]
+    if args.get("dst_ip") is not None:
+        flat_events = [e for e in flat_events if e.get("dest_ip") == args["dst_ip"]]
+    if args.get("src_port") is not None:
+        flat_events = [e for e in flat_events if e.get("transport_src_port") == int(args["src_port"])]
+    if args.get("dst_port") is not None:
+        flat_events = [e for e in flat_events if e.get("transport_dest_port") == int(args["dst_port"])]
+    if args.get("protocol") is not None:
+        flat_events = [
+            e for e in flat_events if (e.get("protocol") or "").upper() == str(args["protocol"]).upper()
+        ]
+
+    total_matched = len(flat_events)
+    page = flat_events[offset : offset + limit]
     has_more = (offset + limit) < total_matched
 
-    if scanned_objects == 0:
+    if not flat_events:
         summary = (
-            f"{source_label} 에서 {start.date()}~{end.date()} 구간에 데이터를 찾지 못했습니다. "
-            "host 이름 또는 로컬 파일 경로가 맞는지 확인하세요."
+            f"{host}의 {start_time}~{end_time} 구간에서 조건에 맞는 네트워크 이벤트를 찾지 못했습니다. "
+            "host 이름, 기간, 또는 NETWORK_LOG_LOCAL_PATH/NETWORK_LOG_BUCKET 설정을 확인하세요."
         )
     else:
         page_desc = f"{offset}~{offset + len(page) - 1}번째" if page else "0건"
         more_desc = f"더 있음 (next_offset={offset + limit})" if has_more else "더 없음"
         summary = (
-            f"{host}의 {start.isoformat()}~{end.isoformat()} 구간에서 ({source_label}) "
-            f"조건에 맞는 네트워크 이벤트 총 {total_matched}건 중 {page_desc} {len(page)}건 반환. "
-            f"({more_desc}, http 이벤트는 url/http_method/status/xff까지 포함)"
+            f"{host}의 {start_time}~{end_time} 구간에서 조건에 맞는 네트워크 이벤트 총 {total_matched}건 중 "
+            f"{page_desc} {len(page)}건 반환. ({more_desc}, http 이벤트는 url/method/status/xff까지 포함, "
+            "1차 탐지팀 공통 정규화 함수 사용)"
         )
 
     return {

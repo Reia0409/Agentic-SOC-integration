@@ -80,7 +80,7 @@ class _FakeCombinedLLMClient:
             ]
         }
 
-    def reason(self, state: Any, tool_registry: Any) -> Dict[str, Any]:
+    def reason(self, state: Any, tool_registry: Any, **kwargs: Any) -> Dict[str, Any]:
         self.reason_call_count += 1
         return {
             "facts": [],

@@ -1,127 +1,88 @@
-﻿"""fetch_auth_log 실제 구현 - EC2의 auth.log(syslog)를 읽어온다.
+"""fetch_auth_log 실제 구현 - EC2의 auth.log(syslog)를 읽어온다.
 
 파일명 == 함수명 규칙에 따라 agent/tools/real/fetch_auth_log.py 안의 fetch_auth_log
 함수만 있으면 agent/tools/registry.py의 build_default_registry()가 자동으로 이 함수를
 mock_tools.py 대신 사용한다.
 
-*** 2026-09-14 업데이트: 팀원(auth tool 담당)이 실제 auth.log로 만든
-    정식 파서(parsers/auth_parser.py)로 교체 ***
-audit/web과 같은 패턴: 파싱 로직(정규식 분류)은 팀원이 만든 걸 그대로 쓰고
-(parsers/auth_parser.py), 이 파일은 그걸 감싸서 S3/로컬 소스 선택 + 우리 tool
-인터페이스(args dict → {count, summary, records})만 담당한다.
+*** 2026-09-22 업데이트 (B: 조사 도구 담당) ***
+자체 파서(parsers/auth_parser.py, "Accepted password"만 인식하던 버그 있던 버전)를 버리고
+1차 탐지팀 공통 정규화 함수(agent/tools/normalizer_adapter.py → normalizer/tools/fetch_auth_log.py)
+를 쓰도록 교체했다. 완료 기준(같은 raw 로그에 대해 1차 탐지와 에이전트 도구가 동일한
+정규화 결과를 반환해야 한다)을 지키기 위해, S3/로컬 소스 선택과 파싱은 전부
+normalizer.adapter.normalize_auth() 에 맡긴다. 이 파일은 그 결과를 우리 tool 인터페이스
+(args dict → {count, summary, records, total_matched, has_more, next_offset})로 감싸는
+얇은 어댑터 역할만 한다 — parsers/auth_parser.py 는 더 이상 여기서 쓰지 않는다.
 
-*** limit/offset 페이지네이션 채택 ***
-실제 auth.log는 SSH 브루트포스 하나로도 399건씩 매칭될 수 있다(직접 확인함).
-한 번에 다 반환하면 LLM 컨텍스트가 커지므로, 팀원이 설계한 limit/offset 방식을
-그대로 채택했다 — 결과가 많으면 has_more/next_offset을 보고 LLM이 필요하면
-next_offset으로 이어서 더 조회할 수 있다.
+*** 필드가 예전과 달라졌다 (팀 공유 필요) ***
+예전 parsers/auth_parser.py: event_type(ssh_login/sudo/pam 3종) · source_ip · raw_log_ref
+새 공통 정규화 함수: event(ssh_accepted/ssh_failed/ssh_invalid_user/ssh_probe/pam_auth_failure/
+pam_session_opened/sudo_command/sudo_denied/su_success/su_failure/pkexec_*/account_* 등 훨씬
+세분화된 값) · src_ip · raw_ref. loop.py/report.py/models.py 는 이 필드명을 하드코딩하지
+않고 LLM이 반환한 JSON(evidence)만 읽으므로(2026-09-22 확인) 코드는 안 깨지지만, tool을
+event_type=... 필터로 호출할 때 넘기는 값은 이제 새 세분화된 이벤트 이름이어야 한다.
 
-*** syslog 연도 한계 ***
-auth.log(syslog)엔 연도가 없어서, 조사 요청의 start_time 연도를 reference_year로
-써서 절대 시각을 복원한다. 연말/연초 경계를 걸친 조회는 정확하지 않을 수 있다.
+*** limit/offset 페이지네이션 유지 ***
+공통 정규화 함수는 전체 목록만 돌려주고 페이지네이션이 없어서, 예전과 동일하게 이
+파일이 직접 slicing 한다 (SSH 브루트포스 하나로도 수백 건씩 매칭될 수 있어서 필요).
 
-*** 2026-09-17 업데이트: auth_parser.py에 auth_method 필드 추가됨 ***
-파서 쪽(parsers/auth_parser.py)에서 Accepted publickey 로그인도 인식하도록
-바뀌면서, 각 인증 이벤트에 auth_method("password"/"publickey"/None)가 추가로
-붙어 나온다. 이 파일은 그 결과를 그대로 records에 실어 나르기만 하면 되므로
-별도 수정은 필요 없다 — records 항목에 auth_method 키가 자동으로 포함됨.
-
-*** 2026-09-17 업데이트: 권한 에러 처리 ***
-로컬 파일이 root 소유라 비root 프로세스가 못 읽는 경우 PermissionError를
-명시적으로 잡아서 source_label에 "(권한 없음)"을 남긴다. scanned_objects가
-0이 되어 아래쪽 "데이터를 찾지 못했습니다" 요약에 그 라벨이 그대로 노출된다.
-
-필요 환경변수 (.env에 추가):
-  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION
-  AUTH_LOG_BUCKET (기본값: ogwanwan-shop-bucket)
-
-*** 로컬 테스트 모드 (AWS 키 없을 때) ***
-.env에 AUTH_LOG_LOCAL_PATH=sample_auth.log 처럼 넣어두면, S3를 아예 안 보고
-그 로컬 파일을 읽는다. AWS 키가 생기면 .env에서 이 줄만 지우면 원래 S3 경로로
-돌아간다.
+필요 환경변수: agent/tools/normalizer_adapter.py 문서 참고
+  (.env에 AUTH_LOG_LOCAL_PATH 있으면 로컬 파일, 없으면 AUTH_LOG_BUCKET/S3)
 """
 
 from __future__ import annotations
 
-import os
-from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from ..parsers.auth_parser import parse_auth_events
-from ._s3_common import daterange, list_and_read_text
-from ..time_utils import parse_iso
+from ..normalizer_adapter import normalize_auth
 
-DEFAULT_BUCKET = "ogwanwan-shop-bucket"
-S3_SOURCE_TYPE = "auth"
 DEFAULT_LIMIT = 200
 
 
-def _read_source_text(host: str, start: datetime, end: datetime) -> "tuple[str, int, str]":
-    """AUTH_LOG_LOCAL_PATH가 있으면 로컬 파일을, 없으면 S3를 읽는다."""
-    local_path = os.environ.get("AUTH_LOG_LOCAL_PATH")
-    if local_path:
-        if not os.path.exists(local_path):
-            return "", 0, f"local:{local_path} (파일 없음)"
-        try:
-            with open(local_path, "r", encoding="utf-8", errors="replace") as f:
-                return f.read(), 1, f"local:{local_path}"
-        except PermissionError:
-            return "", 0, f"local:{local_path} (권한 없음)"
-
-    import boto3  # 실제 호출 시에만 필요하므로 지연 import
-
-    bucket = os.environ.get("AUTH_LOG_BUCKET", DEFAULT_BUCKET)
-    s3 = boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION"))
-
-    chunks: List[str] = []
-    scanned_objects = 0
-    for date_str in daterange(start, end):
-        prefix = f"raw/source_type={S3_SOURCE_TYPE}/host={host}/dt={date_str}/"
-        text, count = list_and_read_text(s3, bucket, prefix)
-        scanned_objects += count
-        chunks.append(text)
-    return (
-        "\n".join(chunks),
-        scanned_objects,
-        f"s3://{bucket}/raw/source_type={S3_SOURCE_TYPE}/host={host}/",
-    )
+def _flatten(event: Dict[str, Any]) -> Dict[str, Any]:
+    """공통스키마 {timestamp, layer, raw_ref, src_ip, pid, ppid, layer_data:{...}} 를
+    LLM이 읽기 편하도록 layer_data를 top-level에 펼친 평평한 dict 하나로 만든다.
+    (primary_detection/normalizer/common/schema.py 의 get_field()와 같은 목적 — 다만 여긴
+    필터링 없이 전부 펼친다. 안 쓰는 필드는 LLM이 알아서 무시한다.)
+    """
+    flat = {k: v for k, v in event.items() if k != "layer_data"}
+    flat.update(event.get("layer_data") or {})
+    return flat
 
 
 def fetch_auth_log(args: Dict[str, Any]) -> Dict[str, Any]:
     host = args["host"]
-    start = parse_iso(args["start_time"])
-    end = parse_iso(args["end_time"])
+    start_time = args["start_time"]
+    end_time = args["end_time"]
     limit = int(args.get("limit", DEFAULT_LIMIT))
     offset = int(args.get("offset", 0))
 
-    text, scanned_objects, source_label = _read_source_text(host, start, end)
-
-    all_events = parse_auth_events(
-        text,
-        reference_year=start.year,
-        time_window=(start, end),
-        source_ip=args.get("src_ip"),
+    events = normalize_auth(
+        host,
+        start_time,
+        end_time,
         user=args.get("user"),
-        event_type=args.get("event_type"),
+        src_ip=args.get("src_ip"),
+        event=args.get("event_type"),  # 우리 tool schema의 event_type == 공통 정규화의 event
         result=args.get("result"),
     )
+    all_events = [_flatten(e) for e in events]
 
     total_matched = len(all_events)
     page = all_events[offset : offset + limit]
     has_more = (offset + limit) < total_matched
 
-    if scanned_objects == 0:
+    if total_matched == 0:
         summary = (
-            f"{source_label} 에서 {start.date()}~{end.date()} 구간에 데이터를 찾지 못했습니다. "
-            "host 이름 또는 로컬 파일 경로가 맞는지 확인하세요."
+            f"{host}의 {start_time}~{end_time} 구간에서 조건에 맞는 인증 이벤트를 찾지 못했습니다. "
+            "host 이름, 기간, 또는 AUTH_LOG_LOCAL_PATH/AUTH_LOG_BUCKET 설정을 확인하세요."
         )
     else:
         page_desc = f"{offset}~{offset + len(page) - 1}번째" if page else "0건"
         more_desc = f"더 있음 (next_offset={offset + limit})" if has_more else "더 없음"
         summary = (
-            f"{host}의 {start.isoformat()}~{end.isoformat()} 구간에서 ({source_label}) "
-            f"조건에 맞는 인증 이벤트 총 {total_matched}건 중 {page_desc} {len(page)}건 반환. "
-            f"({more_desc}, event_type/result/auth_method까지 구조화)"
+            f"{host}의 {start_time}~{end_time} 구간에서 조건에 맞는 인증 이벤트 총 {total_matched}건 중 "
+            f"{page_desc} {len(page)}건 반환. ({more_desc}, event/result까지 구조화, "
+            "1차 탐지팀 공통 정규화 함수 사용)"
         )
 
     return {

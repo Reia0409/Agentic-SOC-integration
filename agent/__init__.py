@@ -13,7 +13,23 @@ Triage가 파이프라인에서 빠지면서 추가된 전(前) 단계:
 - raw log 수집         -> raw_log_ingestion.py (fetch_recent_raw_logs)
 - seed 생성(경량 triage) -> seed_prompts.py, seed_generation.py (SeedGenerator)
 - 전체 파이프라인 연결   -> pipeline.py (run_investigation_pipeline)
+
+*** 2026-09-22: primary-detection/ 을 sys.path에 추가 ***
+1차 탐지팀 벤더 코드(primary-detection/normalizer/)는 agent/ 밖, 레포 루트에 있다
+(agent/tools/normalizer_adapter.py 상단 설명 참고). primary-detection은 하이픈 때문에
+파이썬 패키지로 import할 수 없어서, 여기서 그 폴더 자체를 sys.path에 추가해 그 밑의
+normalizer 패키지를 최상위 패키지처럼(`from normalizer.tools... import ...`) 쓸 수 있게
+한다. agent 패키지가 import될 때 제일 먼저 실행되는 곳이라 여기 둬야, 아래
+raw_log_ingestion을 포함해 normalizer를 쓰는 모든 하위 모듈이 문제없이 import된다.
 """
+
+import os as _os
+import sys as _sys
+
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_PRIMARY_DETECTION_DIR = _os.path.join(_REPO_ROOT, "primary-detection")
+if _PRIMARY_DETECTION_DIR not in _sys.path:
+    _sys.path.insert(0, _PRIMARY_DETECTION_DIR)
 
 from .models import (
     AgentState,

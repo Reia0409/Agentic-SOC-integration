@@ -71,7 +71,12 @@ def check_fetch_network_log() -> bool:
 
 
 def check_get_process_tree() -> bool:
-    from agent.tools.parsers.audit_parser import parse_audit_events
+    # 2026-09-22 업데이트: 자체 파서(parsers/audit_parser.py) 대신 1차 탐지팀 공통
+    # 정규화 함수(agent/tools/normalizer_adapter.py의 normalize_audit(),
+    # get_process_tree.py가 실제로 쓰는 것과 동일)로 샘플 pid를 뽑도록 바꿨다 —
+    # 이걸로 audit_parser.py를 부르는 코드가 프로젝트 전체에서 완전히 사라졌다
+    # (진짜로 삭제해도 된다).
+    from agent.tools.normalizer_adapter import normalize_audit
     from agent.tools.real.get_process_tree import get_process_tree
 
     # audit 샘플에서 실제로 존재하는 pid를 하나 뽑아서 그걸로 조회한다
@@ -82,15 +87,15 @@ def check_get_process_tree() -> bool:
         print("[건너뜀] AUDIT_LOG_LOCAL_PATH가 없어서 실제 pid를 못 뽑음")
         return True
 
-    with open(local_path, encoding="utf-8", errors="replace") as f:
-        text = f.read()
-    events = parse_audit_events(text)
-    if not events:
+    events = normalize_audit("web-01", WIDE_RANGE["start_time"], WIDE_RANGE["end_time"])
+    # 공통스키마의 pid는 값이 없는 audit 이벤트 타입(예: pid 없는 항목)도 있어서
+    # None일 수 있다 — pid가 실제로 찍힌 첫 이벤트를 찾는다.
+    sample_pid = next((e["pid"] for e in events if e.get("pid") is not None), None)
+    if sample_pid is None:
         print(f"\n{'=' * 10} get_process_tree {'=' * 10}")
-        print("[의심] audit 샘플에서 이벤트를 하나도 못 뽑음")
+        print("[의심] audit 샘플에서 pid가 있는 이벤트를 하나도 못 뽑음")
         return True
 
-    sample_pid = events[0]["pid"]
     return _check(
         f"get_process_tree (pid={sample_pid})",
         lambda: get_process_tree({"host": "web-01", "pid": sample_pid, **WIDE_RANGE}),

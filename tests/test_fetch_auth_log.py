@@ -1,21 +1,40 @@
 ﻿"""fetch_auth_log(agent/tools/real/fetch_auth_log.py) 단독 테스트.
 
 실제 AWS에 붙지 않고, boto3를 흉내내는 가짜 객체를 sys.modules에 주입해서
-- ssh_login(성공/실패)/sudo/pam 4종 이벤트가 정확히 분류되는지
-- sudo/pam은 RHOST=/rhost=가 있을 때만 IP가 채워지고, 없으면 None인지
+- ssh_failed(root/invalid user)/ssh_accepted/sudo_command 이벤트가 정확히 분류되는지
+- sudo는 rhost가 없으면 src_ip가 None인지
 - src_ip/user/event_type/result 필터가 되는지
 - limit/offset 페이지네이션이 팀원 설계대로(has_more/next_offset) 동작하는지
 - 오브젝트가 하나도 없을 때의 안내 메시지
 가 맞는지 검증한다.
+
+2026-09-22 (B: 조사 도구 담당) 업데이트: fetch_auth_log가 자체 파서 대신 1차 탐지팀
+공통 정규화 함수(agent/tools/normalizer_adapter.py)를 쓰도록 바뀌면서 필드명이
+event_type→event, source_ip→src_ip로, 이벤트 값도 더 세분화됐다(예전 "ssh_login"
+하나가 이제 "ssh_accepted"/"ssh_failed"로 나뉨, "sudo"는 "sudo_command"). 이 테스트도
+그에 맞춰 갱신했다.
 
 pytest 없이도 저장소 루트에서 `python -m tests.test_fetch_auth_log`로 실행 가능.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from typing import Any, Dict, List
+
+# normalizer 벤더 코드(primary_detection/normalizer/tools/fetch_auth_log.py, 1차 탐지팀
+# 원본 그대로)가 파일 맨 아래에서 무조건 load_dotenv()를 호출한다. 그래서 아래 import가
+# 처음 실행되는 순간, 로컬 .env에 적어둔 AUTH_LOG_LOCAL_PATH 같은 값이 os.environ에
+# 들어와 버릴 수 있다 — 그 값이 남아있으면 이 파일의 테스트들이 주입하는 가짜 S3를
+# 건너뛰고 실제 로컬 파일을 읽어버려서 count가 안 맞는 식으로 깨진다(재현·확인함).
+# sys.modules 캐시 덕분에 load_dotenv()는 프로세스당 한 번만 실행되므로, 여기서 미리
+# import를 한 번 트리거하고 곧바로 관련 환경변수를 비워서 이후 모든 테스트가 항상
+# 가짜 S3만 타도록 만든다.
+import agent.tools.real.fetch_auth_log as _load_dotenv_trigger  # noqa: F401
+for _env_name in ("AUTH_LOG_LOCAL_PATH", "AUDIT_LOG_LOCAL_PATH", "WEB_LOG_LOCAL_PATH", "NETWORK_LOG_LOCAL_PATH"):
+    os.environ.pop(_env_name, None)
 
 
 class _FakeBody:
@@ -86,14 +105,17 @@ def test_fetch_auth_log_classifies_four_event_types() -> None:
         )
 
         assert result["count"] == 4
-        by_user = {r["user"]: r for r in result["records"] if r["event_type"] == "ssh_login"}
+        by_user = {r["user"]: r for r in result["records"] if r["event"] == "ssh_failed"}
         assert by_user["root"]["result"] == "failure"
         assert by_user["testuser"]["result"] == "failure"
-        assert by_user["ubuntu"]["result"] == "success"
-        assert by_user["ubuntu"]["source_ip"] == "112.148.16.1"
 
-        sudo_event = next(r for r in result["records"] if r["event_type"] == "sudo")
-        assert sudo_event["source_ip"] is None, "RHOST=가 없으면 source_ip는 None이어야 한다"
+        accepted = next(r for r in result["records"] if r["event"] == "ssh_accepted")
+        assert accepted["user"] == "ubuntu"
+        assert accepted["result"] == "success"
+        assert accepted["src_ip"] == "112.148.16.1"
+
+        sudo_event = next(r for r in result["records"] if r["event"] == "sudo_command")
+        assert sudo_event["src_ip"] is None, "sudo 줄엔 rhost가 없으니 src_ip는 None이어야 한다"
         print("[PASS] test_fetch_auth_log_classifies_four_event_types")
     finally:
         _uninstall_fake_boto3()
@@ -132,7 +154,7 @@ def test_fetch_auth_log_filters_by_src_ip_user_event_type_result() -> None:
                 "host": "web-01",
                 "start_time": "2026-01-01T00:00:00Z",
                 "end_time": "2026-12-31T23:59:59Z",
-                "event_type": "sudo",
+                "event_type": "sudo_command",
             }
         )
         assert by_event_type["count"] == 1
