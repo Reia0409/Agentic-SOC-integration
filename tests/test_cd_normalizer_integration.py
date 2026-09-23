@@ -41,12 +41,18 @@ def test_all_vendor_fields_and_refs_match_query_and_ingestion(monkeypatch, layer
     assert expected
     fetched = fetch_event_logs({"host": "web-01", "window": window, "layers": [layer]})["records"]
     ingested = fetch_recent_raw_logs("web-01", source_types=[layer])
+    from agent.tools import build_default_registry
+    registry = build_default_registry()
+    tool_name = f"fetch_{layer}_log"
+    assert registry.get(tool_name).handler.__module__ == f"agent.tools.real.{tool_name}"
+    individual = registry.call(tool_name, {"host": "web-01", "start_time": window[0],
+                                           "end_time": window[1], "limit": 10000})["records"]
 
     def key(event):
         return event["timestamp"], event["raw_ref"]
 
     expected = [{**{k: v for k, v in e.items() if k != "layer_data"}, **e["layer_data"]} for e in expected]
-    for actual in (fetched, ingested):
+    for actual in (fetched, ingested, individual):
         stripped = [{k: v for k, v in e.items() if k not in ("raw_refs", "raw_ref_locations", "_source_type")} for e in actual]
         assert sorted(stripped, key=key) == sorted(expected, key=key)
         for event in actual:

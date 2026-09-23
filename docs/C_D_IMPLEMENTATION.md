@@ -1,5 +1,8 @@
 # C·D 구현 및 팀 연동 안내
 
+처음 테스트하는 팀원은 [A·B·C·D 통합 테스트와 쉬운 설명](ABCD_TEST_GUIDE.md)을 먼저 본다.
+전체 연결 데모는 `python -m scripts.demo_abcd`이며, 수집 → seed → 실제 B/C 도구 → D 보고서까지 실행한다.
+
 통합 작업 브랜치: `codex/merge-cd-investigation`
 병합 대상: `feature/Agentic-SOC-Investigation-Agent` (`cb5005d`, 2026-09-23 A/B 작업 포함)
 
@@ -174,7 +177,10 @@ serial을 기준으로 조립하므로 가까운 구간에서 serial이 재사�
 반박 증거, 가짜/누락 참조, 프로세스 트리, 도구 실패 뒤 참조 유지, 기존 종료 관문 연동.
 `tests/test_cd_normalizer_integration.py`: 네 계층 모두 벤더 직접 호출과 수집/조회 결과의
 정규화 필드·raw_ref 동일성, 기존 A/B 어댑터 검사, S3 객체 간 audit 조립, gzip 원본 위치,
-최종 보고서까지 실제 위치 전달을 검증한다. 병합 후 오프라인 테스트 88개가 통과했다.
+최종 보고서까지 실제 위치 전달을 검증한다. B의 개별 조회 도구도 동일성 비교에 포함한다.
+최초 병합 시 88개였고, `tests/test_abcd_pipeline.py`의 전체 연결 검사 9개를 추가한 뒤
+2026-09-23 새 가상환경에서 전체 97개가 통과했다. 단일/4계층, S3 모사(분할 audit·gzip),
+가짜 seed/증거 참조 거부, 환경 설정 독립성을 포함한다.
 기존 테스트도 함께 실행한다. `pytest.ini`는 오프라인 tests만 수집하고 실제 API를 쓰는
 수동 재현성 스크립트 `tests/test_consistency.py`를 제외한다.
 
