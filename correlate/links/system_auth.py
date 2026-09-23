@@ -29,7 +29,8 @@ import os
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from common.join_keys import system_auth_match
+from collections import defaultdict
+
 from correlate.registry import register_linker
 
 JOIN = "system_auth"
@@ -42,25 +43,33 @@ def system_auth_edges(events):
     system 이벤트마다, pid 가 같은 auth 이벤트를 잇는다. 1:1로 강제하지 않는다
     — "묶일 수 있는 후보"는 넉넉히 만들고(코드), guards/클러스터 단계가 정리한다.
 
+    성능: 예전엔 system×auth 전수 비교(O(n²), 실로그에서 6억 회)였다. pid 는 매칭의
+    유일 키이므로 auth 를 pid 로 색인해두고 system 의 pid 로 바로 조회한다(O(n)).
+    결과 edge 집합은 전수 비교와 동일하다(pid 재사용 오연결은 guards 가 시간으로 거른다).
+
     결정과 근거:
       · pid 단독 매칭       → audit.log 에 ses/auid 가 없어 시간·uid 로 좁힐 수단이 없음(JOIN_RULES).
-      · 시간창을 두지 않음   → 같은 pid 면 사실상 같은 프로세스. 필요해지면 join_keys 쪽에
-                              time_proximity 를 추가로 걸면 된다(판정 로직은 거기 한 곳에만).
-      · pid 없는 이벤트 제외 → system_auth_match 자체가 None 을 걸러준다.
+      · pid 없는 이벤트 제외 → 색인/조회에서 None pid 는 건너뛴다.
     """
-    systems = [e for e in events if e.get("layer") == "system"]
-    auths = [e for e in events if e.get("layer") == "auth"]
+    auths_by_pid = defaultdict(list)
+    for a in events:
+        if a.get("layer") == "auth" and a.get("pid") is not None:
+            auths_by_pid[a["pid"]].append(a)
 
     edges = []
-    for s in systems:
-        for a in auths:
-            if system_auth_match(s, a):   # pid 단독 (join_keys)
-                edges.append({
-                    "a": s["raw_ref"],
-                    "b": a["raw_ref"],
-                    "join": JOIN,
-                    "keys": {"pid": s.get("pid")},
-                })
+    for s in events:
+        if s.get("layer") != "system":
+            continue
+        pid = s.get("pid")
+        if pid is None:
+            continue
+        for a in auths_by_pid.get(pid, ()):
+            edges.append({
+                "a": s["raw_ref"],
+                "b": a["raw_ref"],
+                "join": JOIN,
+                "keys": {"pid": pid},
+            })
     return edges
 
 

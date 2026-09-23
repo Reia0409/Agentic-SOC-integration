@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from common.timeparse import normalize_iso
+
 # --- 상수 -------------------------------------------------------------------
 SERIAL_RESET_SLACK = 1000      # serial 이 이만큼 이상 줄면 재부팅으로 본다(파서 200개 창 재정렬 여유)
 PARENT_SLACK_SECONDS = 2.0     # 부모 first_seen 이 자식보다 이만큼 늦어도 허용(데몬은 늦게 관측될 수 있음)
@@ -41,11 +43,8 @@ def parse_ts(value: Any) -> Optional[datetime]:
     """ISO8601(Z / +00:00) → aware UTC datetime. 실패하면 None."""
     if not isinstance(value, str) or not value.strip():
         return None
-    s = value.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
     try:
-        dt = datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(normalize_iso(value))
     except ValueError:
         return None
     if dt.tzinfo is None:

@@ -23,6 +23,7 @@ _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.lineage import build_process_index  # noqa: E402
 from common.schema import get_field  # noqa: E402
+from common.timeparse import normalize_iso  # noqa: E402
 
 # --- 정렬축 -----------------------------------------------------------------
 SORT_KEY = "timestamp"   # 전 계층 공통, UTC
@@ -41,10 +42,7 @@ WWW_DATA_UID = 33   # www-data
 # --- 시간 파싱 헬퍼 ----------------------------------------------------------
 def _parse_ts(iso_str):
     """ISO8601(UTC, 'Z' 허용) → aware datetime."""
-    s = iso_str.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    return datetime.fromisoformat(s)
+    return datetime.fromisoformat(normalize_iso(iso_str))
 
 
 def time_proximity(ev_a, ev_b, seconds=5):

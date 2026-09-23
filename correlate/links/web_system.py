@@ -27,6 +27,9 @@ import os
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from bisect import bisect_left, bisect_right
+from datetime import timedelta
+
 from common.join_keys import web_system_match, _parse_ts
 from common.schema import get_field
 from correlate.registry import register_linker
@@ -47,17 +50,33 @@ def web_system_edges(events, seconds=5):
     1:1로 강제하지 않는다 — "묶일 수 있는 후보"는 넉넉히 만들고(코드), "이게 한 공격인가"의
     최종 판정은 grouping/guards·조사 단계에 맡긴다(설계 원칙: 연결≠해석).
 
+    성능: 예전엔 web×system 전수 비교(O(n²), 실로그에서 2억 회)였다. 매칭은 시간 ±seconds
+    창이 필수 조건이므로 system 을 시각으로 정렬해두고 web 마다 bisect 로 창 범위만 훑는다.
+    창 안 후보에만 web_system_match(uid==33 포함)를 적용 → 결과 edge 는 전수 비교와 동일.
+
     결정과 근거:
       · www-data(uid 33)만 대상    → apache 요청이 유발하는 건 웹서버 계정 활동. 관리자(root) audit 제외.
       · 시간창 기본 ±5초(파라미터)  → nginx→apache→php-fpm 처리 지연은 흡수하되 넓히면 오연결.
       · 계보 확장은 안 함           → audit_lineage(민혁) 담당. 역할 경계 유지.
     """
-    webs = [e for e in events if e.get("layer") == "web"]
-    systems = [e for e in events if e.get("layer") == "system"]
+    # system 을 (시각, 이벤트) 로 정렬 — 시각 파싱 실패건은 제외(정렬축 없음).
+    sys_sorted = sorted(
+        ((t, s) for s in events if s.get("layer") == "system"
+         for t in (_parse_ts(s["timestamp"]),) if t is not None),
+        key=lambda p: p[0],
+    )
+    sys_times = [t for t, _ in sys_sorted]
 
     edges = []
-    for w in webs:
-        for s in systems:
+    for w in events:
+        if w.get("layer") != "web":
+            continue
+        wt = _parse_ts(w["timestamp"])
+        if wt is None:
+            continue
+        lo = bisect_left(sys_times, wt - timedelta(seconds=seconds))
+        hi = bisect_right(sys_times, wt + timedelta(seconds=seconds))
+        for _t, s in sys_sorted[lo:hi]:
             if web_system_match(w, s, seconds):   # 시간근접 + uid==33 (join_keys)
                 edges.append({
                     "a": w["raw_ref"],

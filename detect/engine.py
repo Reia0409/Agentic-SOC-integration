@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Iterator
 
 from common.seed import VALID_ENTITY_TYPES, VALID_SIGNAL_TAGS, build_seed
+from common.timeparse import normalize_iso
 from detect.loader import Rule, RuleError, load_rules  # noqa: F401  (re-export)
 
 SUPPORTED_MODIFIERS = {"contains", "startswith", "endswith", "re", "all", "cased"}
@@ -195,10 +196,7 @@ def evaluate(rule: Rule, event: dict) -> bool:
 
 # ── seed ────────────────────────────────────────────────────────────────────
 def _parse_ts(ts_iso: str) -> datetime:
-    s = ts_iso.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    t = datetime.fromisoformat(s)
+    t = datetime.fromisoformat(normalize_iso(ts_iso))
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 

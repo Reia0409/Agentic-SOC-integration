@@ -12,6 +12,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from common.seed import build_seed, validate as validate_seed
+from common.timeparse import normalize_iso
 from detect.suricata_flow import (
     build_http_evidence_index,
     find_http_evidence_refs,
@@ -31,9 +32,7 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
 def _parse_timestamp(value):
     if not isinstance(value, str) or not value.strip():
         raise ValueError("timestamp가 비어 있음")
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
+    text = normalize_iso(value)
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError as exc:

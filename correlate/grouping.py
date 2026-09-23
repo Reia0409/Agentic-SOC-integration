@@ -56,8 +56,17 @@ def _clusters(nodes, edges):
     return list(groups.values())
 
 
-def correlate(events, seeds=None):
-    """이벤트 + seed → Incident 리스트."""
+MAX_INCIDENT_MEMBERS = 500
+
+
+def correlate(events, seeds=None, require_seed=False, max_members=MAX_INCIDENT_MEMBERS):
+    """이벤트 + seed → Incident 리스트.
+
+    require_seed=True 면 탐지 seed 가 하나도 안 걸린 클러스터(= 계보만으로 뭉친 blob)는
+    사건으로 내보내지 않는다. 탐지 근거 없는 프로세스 트리가 사건 목록을 채우는 것을 막는다.
+    max_members: 이 수를 넘는 거대 사건은 멤버 목록을 잘라 실어 보낸다(트리아지 입력 폭주 방지).
+    None 이면 자르지 않는다.
+    """
     seeds = list(seeds or [])
     _load_linkers()
     by_ref = {e["raw_ref"]: e for e in events}
@@ -83,7 +92,9 @@ def correlate(events, seeds=None):
         cseeds = [s for s in seeds if set(s.get("evidence_refs", [])) & cset]
         for s in cseeds:
             used.add(id(s))
-        incidents.append(build_incident(cev, cedges, cseeds))
+        if require_seed and not cseeds:
+            continue  # 탐지 근거 없는 blob → 사건화 안 함
+        incidents.append(build_incident(cev, cedges, cseeds, max_members=max_members))
 
     # 4) 어느 클러스터에도 안 붙은 seed → 단일 계층 사건(누락 방지)
     for s in seeds:
@@ -91,17 +102,19 @@ def correlate(events, seeds=None):
             continue
         cev = [by_ref[r] for r in s.get("evidence_refs", []) if r in by_ref]
         if cev:
-            incidents.append(build_incident(cev, [], [s]))
+            incidents.append(build_incident(cev, [], [s], max_members=max_members))
 
     incidents.sort(key=lambda i: i["window"][0] or "")
     return incidents
 
 
 if __name__ == "__main__":
-    # 데모: normalize_all() 로 실제 이벤트를 받아 사건 묶기 (seed 없이 edge만)
+    # 데모: normalize_all() 로 실제 이벤트를 받아 사건 묶기.
+    # 운영 기본은 require_seed=True(탐지 앵커 있는 사건만) 이지만, 이 데모는 seed 없이
+    # edge 만 보는 용도라 require_seed=False 로 끈다(안 그러면 항상 0건).
     from tools.normalize import normalize_all
     evs = normalize_all()
-    incs = correlate(evs)
+    incs = correlate(evs, require_seed=False)
     print("이벤트 %d건 → 사건 %d건" % (len(evs), len(incs)))
     for i in incs:
         print("  %s layers=%s members=%d join=%d" % (

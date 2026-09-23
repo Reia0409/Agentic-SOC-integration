@@ -7,9 +7,10 @@ method/path/status가 일치하는 유일한 후보만 자동 연결한다.
 import bisect
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from common.join_keys import web_network_match
+from common.timeparse import parse_utc
 from correlate.registry import register_linker
 from tools.fetch_network_log import canonical_ip, raw_path_and_query
 
@@ -19,18 +20,7 @@ DEFAULT_SECONDS = 1.0
 
 
 def _timestamp(value):
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(timezone.utc)
+    return parse_utc(value)
 
 
 def _method(value):

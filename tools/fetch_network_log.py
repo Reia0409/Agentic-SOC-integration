@@ -18,7 +18,6 @@ Suricata 신규 Sigma 룰은 없다 — alert.signature 를 교차검증 증거�
 """
 
 import os
-import re
 import json
 import ipaddress
 from datetime import datetime, timezone
@@ -36,6 +35,7 @@ except Exception:  # pragma: no cover
 from tools.base import success, failure
 from tools.registry import register
 from common.schema import build_event
+from common.timeparse import normalize_iso
 
 SURICATA_LOG_PATH = os.getenv("SURICATA_LOG_PATH", "/var/log/suricata/eve.json")
 SENSOR_ID = os.getenv("SURICATA_SENSOR_ID", "suricata_ec2")
@@ -117,7 +117,7 @@ def _parse_ts(value):
     if not isinstance(value, str):
         return None
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(normalize_iso(value))
     except ValueError:
         return None
     if dt.tzinfo is None:
@@ -129,10 +129,7 @@ def _parse_ts(value):
 def _iso_to_dt(iso_str):
     if iso_str is None:
         return None
-    s = iso_str.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    dt = datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(normalize_iso(iso_str))
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
