@@ -35,9 +35,21 @@ class Rule:
         self.condition = det["condition"]
         self.tags = data.get("tags", []) or []
         self.seed_entity = data.get("x_seed_entity") or []
-        # 로드 시 condition 문법 검증(모든 selection False 로 가정). 순환 import 회피용 지연 import.
+        self.aggregation = data.get("x_aggregation")
+        if self.aggregation is not None:
+            if not isinstance(self.aggregation, dict):
+                raise RuleError(f"{path.name}: x_aggregation must be a mapping")
+            window = self.aggregation.get("window_seconds")
+            count = self.aggregation.get("min_count")
+            if isinstance(window, bool) or not isinstance(window, (int, float)) or window <= 0:
+                raise RuleError(f"{path.name}: x_aggregation.window_seconds must be positive")
+            if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+                raise RuleError(f"{path.name}: x_aggregation.min_count must be a positive integer")
+        # 로드 시 condition을 한 번 파싱·컴파일한다. 순환 import 회피용 지연 import.
         from detect.engine import Cond
-        Cond(self.condition, {k: False for k in self.selections}).parse()
+        self.condition_expr = Cond(
+            self.condition, {name: False for name in self.selections}
+        ).compile()
 
     @property
     def name(self) -> str:

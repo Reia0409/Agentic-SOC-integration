@@ -8,23 +8,20 @@ HTTP 이벤트를 Apache 요청과 연결하며, 신뢰 가능한 자동 edge는
 
 from __future__ import annotations
 
-import bisect
 import hashlib
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime
 
+from common.network import (
+    ApacheIndex,
+    canonical_ip,
+    network_request,
+    request_matches,
+)
 from common.timeparse import parse_utc
-from tools.fetch_network_log import canonical_ip, raw_path_and_query
 
 
 DEFAULT_STRONG_SECONDS = 1.0
 DEFAULT_FALLBACK_SECONDS = 2.0
 DEFAULT_LONG_DELAY_SECONDS = 900.0
-
-
-def _parse_timestamp(value):
-    return parse_utc(value)
 
 
 def _validate_windows(strong_seconds, fallback_seconds, long_delay_seconds):
@@ -37,98 +34,10 @@ def _validate_windows(strong_seconds, fallback_seconds, long_delay_seconds):
         raise ValueError("fallback_seconds <= long_delay_seconds 이어야 함")
 
 
-@dataclass(frozen=True)
-class ApacheRecord:
-    timestamp: datetime
-    timestamp_text: str
-    src_ip: str
-    method: object
-    path: object
-    status: object
-    host: object
-    request_id: object
-    raw_ref: str
-
-
-class ApacheIndex:
-    """Apache 이벤트를 표준 IP와 UTC 시각으로 정렬한 검색 인덱스."""
-
-    def __init__(self, events):
-        records = []
-        for event in events:
-            if not isinstance(event, dict) or event.get("layer") != "web":
-                continue
-            timestamp = _parse_timestamp(event.get("timestamp"))
-            src_ip = canonical_ip(event.get("src_ip"))
-            layer_data = event.get("layer_data")
-            raw_ref = event.get("raw_ref")
-            if timestamp is None or src_ip is None or not isinstance(layer_data, dict):
-                continue
-            if raw_ref in (None, ""):
-                continue
-            records.append(ApacheRecord(
-                timestamp=timestamp,
-                timestamp_text=event["timestamp"],
-                src_ip=src_ip,
-                method=layer_data.get("method"),
-                path=raw_path_and_query(layer_data.get("path"))[0],
-                status=layer_data.get("status"),
-                host=layer_data.get("host"),
-                request_id=layer_data.get("request_id"),
-                raw_ref=str(raw_ref),
-            ))
-
-        self._by_ip = defaultdict(list)
-        for record in records:
-            self._by_ip[record.src_ip].append(record)
-        self._times_by_ip = {}
-        for src_ip, ip_records in self._by_ip.items():
-            ip_records.sort(key=lambda item: (item.timestamp, item.raw_ref))
-            self._times_by_ip[src_ip] = [item.timestamp for item in ip_records]
-
-        self._all = sorted(records, key=lambda item: (item.timestamp, item.raw_ref))
-        self._all_times = [item.timestamp for item in self._all]
-
-    @staticmethod
-    def _slice(records, times, timestamp, seconds):
-        from datetime import timedelta
-
-        delta = timedelta(seconds=float(seconds))
-        left = bisect.bisect_left(times, timestamp - delta)
-        right = bisect.bisect_right(times, timestamp + delta)
-        return records[left:right]
-
-    def window(self, src_ip, timestamp, seconds):
-        records = self._by_ip.get(src_ip, [])
-        times = self._times_by_ip.get(src_ip, [])
-        return self._slice(records, times, timestamp, seconds)
-
-    def window_without_ip(self, timestamp, seconds):
-        return self._slice(self._all, self._all_times, timestamp, seconds)
-
-
-def _request(event):
-    layer_data = event.get("layer_data", {})
-    return {
-        "method": layer_data.get("method"),
-        "path": layer_data.get("url_path"),
-        "status": layer_data.get("status"),
-        "host": layer_data.get("http_host"),
-    }
-
-
-def _exact(record, request):
-    return (
-        record.method == request["method"]
-        and record.path == request["path"]
-        and record.status == request["status"]
-    )
-
-
 def _classify(index, src_ip, timestamp, request, strong_seconds, fallback_seconds,
               long_delay_seconds):
     near_strong = index.window(src_ip, timestamp, strong_seconds)
-    exact_strong = [record for record in near_strong if _exact(record, request)]
+    exact_strong = [record for record in near_strong if request_matches(record, request)]
     if len(exact_strong) == 1:
         return "strong", "exact_unique_within_strong_window", exact_strong, [
             "src_ip", "method", "path", "status",
@@ -139,7 +48,7 @@ def _classify(index, src_ip, timestamp, request, strong_seconds, fallback_second
         ]
 
     near_fallback = index.window(src_ip, timestamp, fallback_seconds)
-    exact_fallback = [record for record in near_fallback if _exact(record, request)]
+    exact_fallback = [record for record in near_fallback if request_matches(record, request)]
     if exact_fallback:
         reason = "fallback_candidate" if len(exact_fallback) == 1 else "fallback_ambiguous"
         return "context_only", reason, exact_fallback, ["src_ip", "method", "path", "status"]
@@ -151,7 +60,7 @@ def _classify(index, src_ip, timestamp, request, strong_seconds, fallback_second
     long_candidates = [
         record
         for record in index.window(src_ip, timestamp, long_delay_seconds)
-        if _exact(record, request)
+        if request_matches(record, request)
     ]
     if long_candidates:
         return "context_only", "long_delay_exact", long_candidates, [
@@ -175,7 +84,7 @@ def _classify_missing_xff(index, timestamp, request, strong_seconds, fallback_se
         exact = [
             record
             for record in index.window_without_ip(timestamp, seconds)
-            if _exact(record, request)
+            if request_matches(record, request)
         ]
         if exact:
             cardinality = "unique" if len(exact) == 1 else "multiple"
@@ -223,9 +132,9 @@ def correlate_http_event(
     if layer_data.get("event_type") != "http":
         raise ValueError("Suricata HTTP 이벤트가 필요함")
 
-    timestamp = _parse_timestamp(event.get("timestamp"))
+    timestamp = parse_utc(event.get("timestamp"))
     src_ip = canonical_ip(event.get("src_ip"))
-    request = _request(event)
+    request = network_request(event)
     xff_status = layer_data.get("xff_status")
 
     if timestamp is None:

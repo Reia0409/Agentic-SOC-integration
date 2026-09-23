@@ -1,78 +1,129 @@
-"""detect/aggregate.py — seed 노이즈 축소 (집계 + 임계값).
+"""같은 룰·entity의 seed를 집계하고 저심각 단발 노이즈를 제거한다."""
 
-문제: 브루트포스처럼 "시도 1건당 seed 1개"가 나오면(예: SSH 실패 1,371 → seed 1,371),
-사건묶기·트리아지가 노이즈에 묻힌다.
-
-해결(2단):
-  ① 집계  — 같은 (룰, entity) seed 를 하나로 합치고 count·window[처음,마지막]·evidence 를 보존.
-  ② 임계값 — 저심각(low/medium) 인데 count 가 min_count 미만이면 버린다(단발 노이즈).
-            high/critical 은 단발이어도 항상 남긴다(놓치면 안 되는 신호).
-"""
 from __future__ import annotations
+
+from common.timeparse import parse_utc
+
 
 _THRESHOLD_LEVELS = frozenset({"low", "medium"})
 
 
+def _merge(seeds):
+    merged = dict(seeds[0])
+    merged["window"] = list(seeds[0]["window"])
+    merged["evidence_refs"] = []
+    seen = set()
+    for seed in seeds:
+        window = seed["window"]
+        if window and window[0] is not None and (
+            merged["window"][0] is None or window[0] < merged["window"][0]
+        ):
+            merged["window"][0] = window[0]
+        if window and window[1] is not None and (
+            merged["window"][1] is None or window[1] > merged["window"][1]
+        ):
+            merged["window"][1] = window[1]
+        for raw_ref in seed.get("evidence_refs", []):
+            if raw_ref not in seen:
+                seen.add(raw_ref)
+                merged["evidence_refs"].append(raw_ref)
+    merged["count"] = len(seeds)
+    return merged
+
+
+def _timed_groups(seeds, seconds, min_count, always_keep):
+    """시간창 안에서 임계값을 만족하는 겹친 구간을 한 burst로 합친다."""
+    records, invalid = [], []
+    for order, seed in enumerate(seeds):
+        timestamp = parse_utc((seed.get("detail") or {}).get("timestamp"))
+        (records if timestamp is not None else invalid).append((timestamp, order, seed))
+    records.sort(key=lambda item: (item[0], item[1]))
+    required = 1 if always_keep else min_count
+
+    covered = [0] * (len(records) + 1)
+    end = 0
+    for start in range(len(records)):
+        end = max(end, start + 1)
+        while end < len(records) and (records[end][0] - records[start][0]).total_seconds() <= seconds:
+            end += 1
+        if end - start >= required:
+            covered[start] += 1
+            covered[end] -= 1
+
+    groups, current, active, previous = [], [], 0, None
+    for index, (timestamp, _order, seed) in enumerate(records):
+        active += covered[index]
+        if active and current and (timestamp - previous).total_seconds() > seconds:
+            groups.append(current)
+            current = []
+        if active:
+            current.append(seed)
+            previous = timestamp
+        elif current:
+            groups.append(current)
+            current, previous = [], None
+    if current:
+        groups.append(current)
+    if always_keep:
+        groups.extend([[seed] for _timestamp, _order, seed in invalid])
+    return groups
+
+
 def aggregate_seeds(seeds, min_count: int = 5):
-    """seed 리스트 → 집계·임계값 적용된 seed 리스트.
+    """룰별 설정이 있으면 해당 시간창·임계값, 없으면 전역 임계값을 적용한다."""
+    if isinstance(min_count, bool) or not isinstance(min_count, int) or min_count <= 0:
+        raise ValueError("min_count는 양의 정수여야 함")
 
-    같은 (reason, entity.type, entity.value) 를 1건으로 합친다:
-      window       = [모든 start 의 min, 모든 end 의 max]
-      evidence_refs = 합집합(순서 보존)
-      count        = 합쳐진 원본 seed 수 (신규 필드)
-    합친 뒤 count < min_count 이고 rule_severity 가 low/medium 이면 버린다.
-    """
-    groups: dict = {}  # 3.7+ dict 는 삽입순 보존 → OrderedDict 불필요
-    for s in seeds:
-        key = (s["reason"], s["entity"]["type"], s["entity"]["value"])
-        g = groups.get(key)
-        if g is None:
-            g = dict(s)
-            g["window"] = list(s["window"])
-            g["evidence_refs"] = list(s.get("evidence_refs", []))
-            g["_refset"] = set(g["evidence_refs"])
-            g["count"] = 1
-            groups[key] = g
+    groups = {}
+    for seed in seeds:
+        aggregation = seed.get("aggregation") or {}
+        window_seconds = aggregation.get("window_seconds")
+        threshold = aggregation.get("min_count", min_count)
+        if aggregation and (
+            isinstance(window_seconds, bool)
+            or not isinstance(window_seconds, (int, float))
+            or window_seconds <= 0
+            or isinstance(threshold, bool)
+            or not isinstance(threshold, int)
+            or threshold <= 0
+        ):
+            raise ValueError("aggregation은 양의 window_seconds와 min_count가 필요함")
+        entity = seed["entity"]
+        key = (
+            seed.get("rule_id") or seed["reason"],
+            entity["type"],
+            entity["value"],
+            window_seconds,
+            threshold,
+        )
+        groups.setdefault(key, []).append(seed)
+
+    output = []
+    for (_rule, _entity_type, _entity_value, window_seconds, threshold), grouped in groups.items():
+        severity = grouped[0].get("score_parts", {}).get("rule_severity")
+        always_keep = severity not in _THRESHOLD_LEVELS
+        if window_seconds is None:
+            if always_keep or len(grouped) >= threshold:
+                output.append(_merge(grouped))
             continue
-        g["count"] += 1
-        w = s["window"]
-        if w and w[0] is not None and (g["window"][0] is None or w[0] < g["window"][0]):
-            g["window"][0] = w[0]
-        if w and w[1] is not None and (g["window"][1] is None or w[1] > g["window"][1]):
-            g["window"][1] = w[1]
-        for r in s.get("evidence_refs", []):
-            if r not in g["_refset"]:
-                g["_refset"].add(r)
-                g["evidence_refs"].append(r)
-
-    out = []
-    for g in groups.values():
-        g.pop("_refset", None)
-        sev = g.get("score_parts", {}).get("rule_severity")
-        if g["count"] < min_count and sev in _THRESHOLD_LEVELS:
-            continue  # 저심각 단발 노이즈 → 버림
-        out.append(g)
-    return out
+        for burst in _timed_groups(grouped, float(window_seconds), threshold, always_keep):
+            output.append(_merge(burst))
+    return output
 
 
-if __name__ == "__main__":  # 자체 점검: python detect/aggregate.py
-    def _seed(reason, ip, ref, level, w0, w1):
-        return {"entity": {"type": "src_ip", "value": ip}, "window": [w0, w1],
-                "layer": "auth", "source": ["sigma"], "reason": reason,
-                "score_parts": {"rule_severity": level, "deviation": None, "layer_count": 1},
-                "signal_tags": [], "evidence_refs": [ref]}
+if __name__ == "__main__":
+    def seed(second, *, count=5, severity="medium"):
+        timestamp = f"2026-09-20T00:00:{second:02d}Z"
+        return {
+            "entity": {"type": "src_ip", "value": "1.2.3.4"},
+            "window": [timestamp, timestamp],
+            "layer": "web", "source": ["sigma"], "reason": "login",
+            "rule_id": "login", "score_parts": {"rule_severity": severity},
+            "detail": {"timestamp": timestamp}, "evidence_refs": [f"access.log:{second}"],
+            "aggregation": {"window_seconds": 300, "min_count": count},
+        }
 
-    # 같은 룰·IP 브루트포스 6건 → 1건(count=6), window 는 [처음, 마지막]
-    brute = [_seed("SSH fail", "1.2.3.4", f"auth.log:{i}", "low",
-                   f"2026-09-20T00:00:0{i}Z", f"2026-09-20T00:00:0{i}Z") for i in range(6)]
-    agg = aggregate_seeds(brute, min_count=5)
-    assert len(agg) == 1 and agg[0]["count"] == 6
-    assert agg[0]["window"] == ["2026-09-20T00:00:00Z", "2026-09-20T00:00:05Z"]
-    assert len(agg[0]["evidence_refs"]) == 6
-
-    # 저심각 단발 → 임계값 미달로 버림
-    assert aggregate_seeds([_seed("x", "9.9.9.9", "a:1", "low", "t", "t")], min_count=5) == []
-    # high 단발 → 항상 남김
-    keep = aggregate_seeds([_seed("crit", "9.9.9.9", "a:1", "high", "t", "t")], min_count=5)
-    assert len(keep) == 1 and keep[0]["count"] == 1
+    assert aggregate_seeds([seed(i) for i in range(5)])[0]["count"] == 5
+    assert aggregate_seeds([seed(i, count=6) for i in range(5)]) == []
+    assert aggregate_seeds([seed(0, count=1), seed(1, count=1)])[0]["count"] == 2
     print("ok")

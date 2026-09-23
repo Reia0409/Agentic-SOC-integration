@@ -85,10 +85,22 @@ def correlate(events, seeds=None, require_seed=False, max_members=MAX_INCIDENT_M
 
     incidents = []
     used = set()
-    for cluster in _clusters(nodes, edges):
+    clusters = _clusters(nodes, edges)
+    cluster_by_ref = {
+        raw_ref: cluster_index
+        for cluster_index, cluster in enumerate(clusters)
+        for raw_ref in cluster
+    }
+    edges_by_cluster = [[] for _ in clusters]
+    for edge in edges:
+        cluster_index = cluster_by_ref.get(edge["a"])
+        if cluster_index is not None and cluster_by_ref.get(edge["b"]) == cluster_index:
+            edges_by_cluster[cluster_index].append(edge)
+
+    for cluster_index, cluster in enumerate(clusters):
         cset = set(cluster)
         cev = [by_ref[r] for r in cluster if r in by_ref]
-        cedges = [e for e in edges if e["a"] in cset and e["b"] in cset]
+        cedges = edges_by_cluster[cluster_index]
         cseeds = [s for s in seeds if set(s.get("evidence_refs", [])) & cset]
         for s in cseeds:
             used.add(id(s))

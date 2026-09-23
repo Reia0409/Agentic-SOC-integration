@@ -110,6 +110,7 @@ def match_selection(event: dict, selection: Any) -> bool:
 class Cond:
     def __init__(self, condition: str, results: dict[str, bool]):
         self.tokens = self._tokenize(condition)
+        self.names = tuple(results)
         self.results = results
         self.i = 0
 
@@ -124,11 +125,15 @@ class Cond:
             pos = m.end()
         return out
 
-    def parse(self) -> bool:
-        v = self._or()
+    def compile(self):
+        self.i = 0
+        expression = self._or()
         if self.i != len(self.tokens):
             raise RuleError(f"unexpected token {self.tokens[self.i]!r}")
-        return v
+        return expression
+
+    def parse(self) -> bool:
+        return _evaluate_condition(self.compile(), self.results)
 
     def _peek(self):
         return self.tokens[self.i] if self.i < len(self.tokens) else None
@@ -138,43 +143,56 @@ class Cond:
         self.i += 1
         return t
 
-    def _or(self) -> bool:
-        v = self._and()
+    def _or(self):
+        expression = self._and()
         while self._peek() == "or":
             self._take()
-            v = self._and() or v
-        return v
+            expression = ("or", expression, self._and())
+        return expression
 
-    def _and(self) -> bool:
-        v = self._not()
+    def _and(self):
+        expression = self._not()
         while self._peek() == "and":
             self._take()
-            v = self._not() and v
-        return v
+            expression = ("and", expression, self._not())
+        return expression
 
-    def _not(self) -> bool:
+    def _not(self):
         if self._peek() == "not":
             self._take()
-            return not self._not()
+            return ("not", self._not())
         return self._primary()
 
-    def _primary(self) -> bool:
+    def _primary(self):
         t = self._take()
         if t == "(":
-            v = self._or()
+            expression = self._or()
             if self._take() != ")":
                 raise RuleError("missing ')'")
-            return v
+            return expression
         if t in ("1 of", "all of"):
             pat = self._take()
-            names = list(self.results) if pat == "them" else [n for n in self.results if fnmatch.fnmatchcase(n, pat)]
+            names = list(self.names) if pat == "them" else [n for n in self.names if fnmatch.fnmatchcase(n, pat)]
             if not names:
                 raise RuleError(f"'{t} {pat}' matches no selection")
-            vals = [self.results[n] for n in names]
-            return any(vals) if t == "1 of" else all(vals)
-        if t not in self.results:
+            return ("any" if t == "1 of" else "all", tuple(names))
+        if t not in self.names:
             raise RuleError(f"unknown selection '{t}'")
-        return self.results[t]
+        return ("selection", t)
+
+
+def _evaluate_condition(expression, results: dict[str, bool]) -> bool:
+    operation = expression[0]
+    if operation == "selection":
+        return results[expression[1]]
+    if operation == "not":
+        return not _evaluate_condition(expression[1], results)
+    if operation == "and":
+        return _evaluate_condition(expression[1], results) and _evaluate_condition(expression[2], results)
+    if operation == "or":
+        return _evaluate_condition(expression[1], results) or _evaluate_condition(expression[2], results)
+    values = (results[name] for name in expression[1])
+    return any(values) if operation == "any" else all(values)
 
 
 # ── 라우팅 / 평가 ───────────────────────────────────────────────────────────
@@ -190,8 +208,12 @@ def routed(rule: Rule, event: dict) -> bool:
 def evaluate(rule: Rule, event: dict) -> bool:
     if not routed(rule, event):
         return False
+    return _evaluate_routed(rule, event)
+
+
+def _evaluate_routed(rule: Rule, event: dict) -> bool:
     results = {name: match_selection(event, sel) for name, sel in rule.selections.items()}
-    return Cond(rule.condition, results).parse()
+    return _evaluate_condition(rule.condition_expr, results)
 
 
 # ── seed ────────────────────────────────────────────────────────────────────
@@ -229,6 +251,8 @@ def make_seed(event: dict, rule: Rule, window_sec: int = 60) -> dict:
     # 계약 밖 보조 정보(조사 에이전트·사람이 읽기 위한 것)
     seed["rule_id"] = rule.id
     seed["rule_name"] = rule.name
+    if rule.aggregation:
+        seed["aggregation"] = dict(rule.aggregation)
     seed["detail"] = {"timestamp": event.get("timestamp"), "pid": event.get("pid"), "ppid": event.get("ppid"),
                       **{k: ld.get(k) for k in ("uid", "user", "src_user", "event", "comm", "exe", "exec_args",
                                                  "path", "cwd", "method", "status", "user_agent", "command")
@@ -238,9 +262,17 @@ def make_seed(event: dict, rule: Rule, window_sec: int = 60) -> dict:
 
 def detect(events: Iterable[dict], rules: list[Rule], window_sec: int = 60) -> Iterator[tuple[dict, Rule, dict]]:
     """이벤트 스트림 × 룰 → (event, rule, seed) 를 순서대로 산출."""
+    rules = tuple(rules)
+    rules_by_layer = {
+        layer: tuple(rule for rule in rules if routed(rule, {"layer": layer}))
+        for layer in LAYER_LOGSOURCE
+    }
     for ev in events:
-        for r in rules:
-            if evaluate(r, ev):
+        candidates = rules_by_layer.get(ev.get("layer"))
+        if candidates is None:
+            candidates = tuple(rule for rule in rules if routed(rule, ev))
+        for r in candidates:
+            if _evaluate_routed(r, ev):
                 yield ev, r, make_seed(ev, r, window_sec)
 
 

@@ -24,6 +24,9 @@ fields:
 falsepositives:
   - 승인된 인증 테스트
 level: medium
+x_aggregation:
+  window_seconds: 300
+  min_count: 1
 x_seed_entity:
   - src_ip
 tags:
