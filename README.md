@@ -1,5 +1,16 @@
 # Agentic-SOC
 
+## 2026-09-23: A·B 공통 정규화와 C·D 기능 통합
+
+현재 조사 브랜치의 공통 정규화 코드를 유지하면서 사건 시간 구간 조회(`fetch_event_logs`)와
+원본 참조 추적·검증을 연결했습니다. 웹 로그는 Apache 형식을 사용하며,
+1차 탐지가 만든 로컬 `raw_ref`는 그대로 유지하고 `raw_ref_locations`에 실제 경로를 기록합니다.
+
+- [C·D 사용법과 병합 내용](docs/C_D_IMPLEMENTATION.md)
+- 오프라인 검증: `pip install -r requirements-dev.txt` → `python -m pytest -q`
+- 4계층 데모: `python -m scripts.demo_event_window` → `results/cd_demo.json`
+
+
 "에이전트개발-9/9" 문서의 조사 에이전트 설계를 파이썬으로 구현한 것입니다.
 Triage/감지 에이전트가 파이프라인에서 빠지면서, raw log를 직접 받아 LLM이
 스스로 seed를 생성하고 우선순위를 매긴 뒤 심층 조사까지 하는 구조로 확장했습니다.
