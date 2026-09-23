@@ -1,0 +1,29 @@
+# 환경변수 (API 키·경로·서버 IP) — 절대 커밋 금지
+.env
+
+# 파이썬
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 대용량 / 실제 로그 (합성 샘플 tools/sample_* 는 커밋함)
+*.log.gz
+eve.json
+access.log
+audit.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 실행 산출물
+out/
+graphify-out/

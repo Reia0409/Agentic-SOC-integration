@@ -1,0 +1,42 @@
+# 막는 공격: 웹셸에서 sudo/su/pkexec/doas 로 root 권한 획득 시도
+# 탐지 근거: execve comm=sudo|su|pkexec|doas + www-data + 비대화형. 성공 여부 무관(웹서버 계정의 시도 자체가 신호)
+# 근거: 9/14 07:35 www-data `sh -c sudo su` 실측(실패). auth_web_user_priv_esc 와 pid 로 이어짐
+title: Web Process Attempts Privilege Escalation
+id: 8d2f6a1b-4c7e-4e2a-b3d9-1f5e7a9c2b46
+status: experimental
+description: >
+  www-data(uid=33)가 로그인 세션 없이 sudo/su/pkexec/doas 를 실행.
+  웹서버 계정은 이런 명령을 쓸 이유가 없으므로 성공 여부와 무관하게 권한 상승 시도로 본다.
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1548/003/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_tool:
+    layer_data.syscall: execve
+    layer_data.comm:
+      - sudo
+      - su
+      - pkexec
+      - doas
+  selection_webuser_uid:
+    layer_data.uid: 33
+  selection_webuser_euid:
+    layer_data.euid: 33
+  filter_interactive:
+    layer_data.session_type: interactive
+  condition: selection_tool and (selection_webuser_uid or selection_webuser_euid) and not filter_interactive
+fields:
+  - pid
+  - ppid
+  - layer_data.exec_args
+  - layer_data.success
+falsepositives:
+  - 없음 (웹서버 계정이 sudo 를 쓰는 정상 시나리오 없음)
+level: critical
+tags:
+  - attack.privilege-escalation
+  - attack.t1548.003

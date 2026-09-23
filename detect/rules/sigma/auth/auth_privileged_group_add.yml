@@ -1,0 +1,49 @@
+# 계정을 관리자 권한 그룹에 추가.
+# - sudo/admin/wheel/root: 곧바로 root 권한. shadow: /etc/shadow 읽기. lxd/docker/disk: 사실상 root.
+# - adm 은 뺐다: rsyslog 등 패키지 설치가 syslog 계정을 adm 에 넣는다(로그 읽기 권한, 오탐 우선 제거).
+# - usermod·useradd 는 같은 추가를 "to group" + "to shadow group" 2줄로 남긴다.
+#   정규화에서 뒤 줄을 gshadow_member_added 로 나눴으므로 추가 1회 = 히트 1건.
+title: Account Added To Privileged Group
+id: d676a4ea-0f10-474d-be05-891b50fb7b01
+status: experimental
+description: 계정이 sudo·admin·wheel·root·shadow·lxd·docker·disk 그룹에 추가됨
+references:
+  - https://attack.mitre.org/techniques/T1098/
+  - https://github.com/SigmaHQ/sigma/blob/master/rules/linux/process_creation/proc_creation_lnx_usermod_susp_group.yml
+author: 박지희
+date: 2026-09-17
+tags:
+  - attack.persistence
+  - attack.privilege-escalation
+  - attack.t1098
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection_event:
+    layer_data.event: group_member_added
+  selection_group:
+    layer_data.group:
+      - sudo
+      - admin
+      - wheel
+      - root
+      - shadow
+      - lxd
+      - docker
+      - disk
+  condition: selection_event and selection_group
+fields:
+  - pid
+  - layer_data.program
+  - layer_data.user
+  - layer_data.group
+  - layer_data.src_user
+falsepositives:
+  - 관리자가 docker 설치 후 ubuntu 를 docker 그룹에 추가
+level: high
+x_correlation: none          # required(필수) | recommended(권장) | none(단독 판정)
+x_correlation_note: '단독 판정 가능. 보강: 같은 계정 생성 직후인지'
+x_seed_entity:
+  - layer_data.user
+  - pid

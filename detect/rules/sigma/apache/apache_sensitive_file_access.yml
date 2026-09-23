@@ -1,0 +1,46 @@
+# [#2 · ① 정찰] apache_sensitive_file_access.yml
+# 막는 공격: 설정·비밀 파일 스캐닝 (.env / .git / 자격증명 파일 노출 탐색)
+# 탐지 근거: 웹으로 노출되면 안 되는 파일 경로에 대한 요청
+# 실 EC2 로그 근거: /.env 188건, /.git/config 15건, config.php·settings.py 404 버스트
+title: Sensitive / Config File Access (Apache)
+id: c1f0a4d2-6b3e-4c7a-9d21-7e5f0a9b3c88
+status: test
+description: 웹루트에 노출되면 안 되는 설정·비밀·자격증명 파일 경로에 대한 요청 탐지 (정찰 단계)
+author: 지원
+date: 2026-09-22
+logsource:
+  product: apache
+  category: webserver
+detection:
+  secret_path:
+    path|contains:
+      - '.env'
+      - '/.git'
+      - '/.svn'
+      - '.htaccess'
+      - '.htpasswd'
+      - 'wp-config.php'
+      - 'config.php'
+      - 'configuration.php'
+      - '/.aws/'
+      - '/.ssh/'
+      - 'id_rsa'
+      - 'settings.py'
+      - '.sql'
+      - '.bak'
+      - 'phpinfo'
+  condition: secret_path
+fields:
+  - src_ip
+  - path
+  - status
+  - user_agent
+falsepositives:
+  - 설정파일과 유사한 이름의 정상 정적 자원 (드묾)
+  - 승인된 취약점 점검
+level: high
+tags:
+  - attack.reconnaissance
+  - attack.t1595.003   # Active Scanning: Wordlist Scanning
+  - attack.credential-access
+  - attack.t1552.001   # Unsecured Credentials: Credentials In Files

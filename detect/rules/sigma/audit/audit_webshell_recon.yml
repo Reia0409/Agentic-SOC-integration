@@ -1,0 +1,91 @@
+# 막는 공격: 배치된 웹셸로 명령 실행·정찰 (id, whoami, cat, wget, nc 등)
+# 탐지 근거: key=exec 또는 정찰 도구 comm 또는 sh -c 로 감싼 실행 + www-data + 비대화형. --version/--help 프로빙 제외
+# 조인: apache_webshell_command 에서 시스템 계층으로 넘어오는 지점 (9/14 실측 웹셸 세션 3개)
+title: Web Process Executes Reconnaissance/Exploitation Command Without Interactive Session
+id: e4a19d72-6c8f-4b31-9f0a-3d7c5e91b6a4
+status: stable
+description: >
+  www-data(uid=33)가 로그인 세션 없이 정찰/공격 도구 명령(id, whoami, cat, wget, nc 등)을 실행.
+  정상 wp-admin 동작은 이런 명령을 띄우지 않으므로 webroot 쓰기보다 정밀도가 높다.
+author: Agentic SOC Detection Team
+date: 2026-08-25
+modified: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1505/003/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  # A. auditd 가 exec/cloud_creds 로 태그한 이벤트 (webroot/sensitive 는 별도 저신뢰 룰)
+  selection_key:
+    layer_data.key:
+      - exec
+      - cloud_creds
+  # B-1. 도구 이름 자체로 실행
+  selection_comm:
+    layer_data.comm:
+      - wget
+      - nc
+      - netcat
+      - curl
+      - id
+      - whoami
+      - ps
+      - netstat
+      - ls
+      - ifconfig
+      - mount
+      - uname
+      - dpkg
+      - date
+      - history
+      - clear
+      - chmod
+      - last
+      - getent
+      - lsb_release
+      - cat
+  # B-2. sh -c "..." 로 감싸서 실행
+  selection_shell_wrapped:
+    layer_data.comm:
+      - sh
+      - bash
+      - dash
+    layer_data.exec_args|contains:
+      - netcat
+      - wget
+      - curl
+      - /bin/sh
+      - /bin/bash
+  selection_webuser_uid:
+    layer_data.uid: 33
+  selection_webuser_euid:
+    layer_data.euid: 33
+  filter_interactive:
+    layer_data.session_type: interactive
+  # tar/gzip --version 같은 WordPress 의 capability probing 제외 (EC2 실측)
+  filter_version_check:
+    layer_data.exec_args|endswith:
+      - '--version'
+      - '--help'
+      - ' -v'
+      - ' -h'
+  condition: (selection_key or selection_comm or selection_shell_wrapped) and (selection_webuser_uid or selection_webuser_euid) and not filter_interactive and not filter_version_check
+fields:
+  - pid
+  - ppid
+  - layer_data.comm
+  - layer_data.exe
+  - layer_data.exec_args
+  - layer_data.uid
+  - layer_data.euid
+  - layer_data.key
+  - layer_data.session_type
+falsepositives:
+  - www-data 계정으로 도는 배포 자동화 (이 환경에선 드묾)
+level: critical
+tags:
+  - attack.execution
+  - attack.t1059.004
+  - attack.persistence
+  - attack.t1505.003

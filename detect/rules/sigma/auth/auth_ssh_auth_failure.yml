@@ -1,0 +1,43 @@
+# 인증 단계에서 실패로 끝난 SSH 연결 1개 = 히트 1건.
+# - 한 연결은 Invalid user / Failed password ×N / Connection closed 처럼 2~6줄을 남긴다.
+#   줄마다 히트를 내면 시도 횟수가 부풀려지므로, 연결의 "마지막 줄"(ssh_auth_fail_close)에만 건다.
+#   Connection closed by|Disconnected from (invalid|authenticating) user … [preauth]
+#   Disconnecting (invalid|authenticating) user …: Too many authentication failures [preauth]
+# - 키 전용 인증(EC2 기본 PasswordAuthentication no)에서는 Failed password 줄이 아예 없고 이 줄만 남는다.
+# - 계정 없이 끊긴 연결(kex 탐침)은 인증 시도가 아니라서 제외(ssh_probe).
+# - 룰은 한 줄씩만 본다. "5분에 N회" 집계는 사건 묶기(③)가 src_ip 로 모아 브루트포스·계정 스캔을 판단한다.
+title: SSH Connection Closed During Authentication
+id: f368860e-099f-4b06-a33d-75ee087c7cf3
+status: experimental
+description: >
+  SSH 연결이 인증 단계에서 끝남(없는 계정 또는 인증 실패). 단건으로는 판정 불가, 같은 src_ip 의
+  반복·계정 다양성·이후 로그인 성공과 상관해야 의미가 생긴다.
+references:
+  - https://attack.mitre.org/techniques/T1110/
+author: 박지희
+date: 2026-09-17
+tags:
+  - attack.credential-access
+  - attack.t1110.001
+  - attack.t1110.003
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection:
+    layer_data.event: ssh_auth_fail_close
+  condition: selection
+fields:
+  - src_ip
+  - pid
+  - layer_data.user
+  - layer_data.invalid_user
+  - layer_data.reason
+  - layer_data.rport
+falsepositives:
+  - 팀원의 키 선택 실수(IdentitiesOnly 미지정), 배포·모니터링 봇의 키 오류
+level: low
+x_correlation: required          # required(필수) | recommended(권장) | none(단독 판정)
+x_correlation_note: '같은 src_ip 기준 5분 실패 연결 수(브루트포스), 5분 서로 다른 계정 수(계정 스캔), 실패 뒤 같은 IP 의 로그인 성공(대입 성공)'
+x_seed_entity:
+  - src_ip

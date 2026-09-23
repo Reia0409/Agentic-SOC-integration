@@ -1,0 +1,54 @@
+# 웹·DB 서비스 계정이 sudo / su / pkexec 를 시도. 성공·실패 무관.
+# - 서비스 계정은 로그인도 sudo 도 하지 않는다. 요청이 보였다면 그 계정으로 명령을 돌리는 누군가(웹셸)가 있다.
+# - "무엇을(COMMAND) 누구 권한으로(USER) 요청했고 왜 거부됐나(reason)"가 남는다.
+# - 한 번의 시도가 PAM 줄(conversation failed, authentication failure)까지 2~3줄을 남기므로
+#   요약 줄(sudo_command/sudo_denied, su_*, pkexec_*)에만 건다 → 시도 1회 = 히트 1건.
+# - 한계: sudo -n 처럼 auth.log 에 안 남는 요청은 못 본다.
+title: Service Account Attempts Privilege Escalation Via sudo/su/pkexec
+id: a42f99d4-8802-43bc-bd15-e922350ad881
+status: experimental
+description: www-data 등 서비스 계정이 sudo·su·pkexec 로 다른 계정 권한을 요청함. 웹셸 권한 상승 시도
+references:
+  - https://attack.mitre.org/techniques/T1548/003/
+  - https://attack.mitre.org/techniques/T1505/003/
+author: 박지희
+date: 2026-09-17
+tags:
+  - attack.privilege-escalation
+  - attack.t1548.003
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection_event:
+    layer_data.event:
+      - sudo_command
+      - sudo_denied
+      - su_success
+      - su_failure
+      - pkexec_command
+      - pkexec_denied
+  selection_service_actor:
+    layer_data.src_user:
+      - www-data
+      - nginx
+      - apache
+      - nobody
+      - mysql
+      - redis
+  condition: selection_event and selection_service_actor
+fields:
+  - layer_data.src_user
+  - layer_data.user
+  - layer_data.event
+  - layer_data.command
+  - layer_data.reason
+  - layer_data.tty
+  - layer_data.pwd
+falsepositives:
+  - sudoers 에 www-data 용 배포 명령을 의도적으로 허용한 경우 (web-01 에는 없음)
+level: critical
+x_correlation: none          # required(필수) | recommended(권장) | none(단독 판정)
+x_correlation_note: '단독 판정 가능. 보강: 같은 시각 웹 요청(웹셸 URL)'
+x_seed_entity:
+  - layer_data.src_user

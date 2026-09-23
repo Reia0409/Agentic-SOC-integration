@@ -1,0 +1,31 @@
+# [#1 · ① 정찰] apache_nikto_scan.yml
+# 막는 공격: Nikto 웹취약점 스캐너 — 알려진 취약 경로를 대량 자동 정찰
+# 탐지 근거: Nikto 기본 User-Agent 시그니처
+title: Nikto Web Vulnerability Scanner (Apache)
+id: 8123f034-38ce-4466-871e-f916b00dfadd
+status: test
+description: Apache 액세스 로그에서 Nikto 스캐너의 기본 User-Agent 탐지
+references:
+  - https://github.com/sullo/nikto
+author: 지원
+date: 2026-09-14
+logsource:
+  product: apache
+  category: webserver
+detection:
+  selection:
+    user_agent|contains:
+      - 'Nikto'
+      - 'nikto'
+  condition: selection
+fields:
+  - src_ip
+  - path
+  - status
+  - user_agent
+falsepositives:
+  - 승인된 취약점 점검/모의해킹 시간대
+level: high
+tags:
+  - attack.reconnaissance
+  - attack.t1595.002   # Active Scanning: Vulnerability Scanning

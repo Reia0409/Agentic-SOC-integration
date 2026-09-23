@@ -1,0 +1,37 @@
+# [#11 · ⑤ 웹셸 배치] apache_automated_webshell_upload.yml
+# 막는 공격: 자동화 도구의 웹셸 파일 업로드 (침입 성공 후 발판 설치)
+# 탐지 근거: 알려진 웹셸 파일명/업로드 경로로의 POST
+title: Automated Web Shell Upload (Apache)
+id: 5189306a-70d2-4a16-acc8-6e25a52fb10b
+status: test
+description: 알려진 웹셸 파일명 또는 업로드 엔드포인트로의 POST 요청 탐지 (웹셸 배치 단계)
+author: 지원
+date: 2026-09-14
+logsource:
+  product: apache
+  category: webserver
+detection:
+  upload_post:
+    method: 'POST'
+  shell_name:
+    path|contains:
+      - 'shell.php'
+      - 'c99.php'
+      - 'r57.php'
+      - 'wso.php'
+      - 'cmd.php'
+      - 'b374k'
+      - 'webshell'
+      - 'upload.php'
+  condition: upload_post and shell_name
+fields:
+  - src_ip
+  - path
+  - status
+  - user_agent
+falsepositives:
+  - 정상 파일 업로드 기능 (파일명 충돌 시)
+level: high
+tags:
+  - attack.persistence
+  - attack.t1505.003   # Server Software Component: Web Shell

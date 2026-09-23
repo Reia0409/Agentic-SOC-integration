@@ -1,0 +1,39 @@
+title: High-Frequency Login Attempts (Apache)
+id: ddb6e08d-f471-4e96-9af1-9f54785cc42b
+status: test
+description: 같은 IP에서 5분 내 로그인 엔드포인트 POST가 20회 이상 발생한 경우 탐지
+author: 지원
+date: 2026-09-23
+logsource:
+  product: apache
+  category: webserver
+detection:
+  login_post:
+    method: 'POST'
+    path|contains:
+      - '/wp-login.php'
+      - '/xmlrpc.php'
+      - '/administrator'
+      - '/login'
+  trusted_automation:
+    user_agent|contains:
+      - 'WordPress.com'
+      - 'Jetpack by WordPress.com'
+      - 'WordPress/'
+  condition: login_post and not trusted_automation
+fields:
+  - src_ip
+  - path
+  - status
+  - user_agent
+falsepositives:
+  - 승인된 부하 테스트 또는 인증 점검
+level: medium
+x_aggregation:
+  window_seconds: 300
+  min_count: 20
+x_seed_entity:
+  - src_ip
+tags:
+  - attack.credential-access
+  - attack.t1110.001

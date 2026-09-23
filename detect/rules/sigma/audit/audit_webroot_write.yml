@@ -1,0 +1,44 @@
+# 막는 공격: 웹 취약점을 통한 웹셸 파일 업로드·수정 (웹서버 계정이 웹루트에 파일을 씀)
+# 탐지 근거: auditd key=webroot + uid/euid=33(www-data) + 비대화형 세션
+# 주의: 정상 플러그인·테마·미디어 업로드와 같은 필드로 찍힘(9/14 실측 266건 전부 정상) → 단독 seed 불가, access.log 상관 필수
+title: Web Process Writes to Webroot Without Interactive Session (Low-Confidence Candidate)
+id: 9b1e7f34-2d6a-4c8e-8a1b-5f3e6c9d4a72
+status: experimental
+description: >
+  www-data(uid=33)가 로그인 세션 없이 웹루트(/var/www/html) 하위에 파일을 생성/수정.
+  인증된 wp-admin 작업(플러그인·테마 설치, 미디어 업로드)과 취약점을 통한 웹셸 업로드가
+  같은 필드로 찍히므로 access.log(request_id 또는 시간창+IP)와 조인해야 확정 가능.
+author: Agentic SOC Detection Team
+date: 2026-08-25
+modified: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1505/003/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_key:
+    layer_data.key: webroot
+  selection_webuser_uid:
+    layer_data.uid: 33
+  selection_webuser_euid:
+    layer_data.euid: 33
+  filter_interactive:
+    layer_data.session_type: interactive
+  condition: selection_key and (selection_webuser_uid or selection_webuser_euid) and not filter_interactive
+fields:
+  - pid
+  - ppid
+  - layer_data.exe
+  - layer_data.path
+  - layer_data.uid
+  - layer_data.euid
+  - layer_data.session_type
+falsepositives:
+  - 정상 wp-admin 플러그인/테마 설치·업데이트 (매우 흔함, EC2 실측 확인)
+  - 인증 사용자의 미디어 라이브러리 업로드
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1505.003
+x_correlation_required: true

@@ -1,0 +1,45 @@
+# 허용 목록에 없는 계정으로 SSH 로그인 성공.
+# - web-01 의 정상 로그인 계정은 ubuntu 하나(EC2 Instance Connect 도 ubuntu 로 들어옴).
+# - 걸리는 것: 웹셸로 /var/www/.ssh/authorized_keys 를 심은 뒤의 www-data 로그인,
+#   공격자가 만든 백도어 계정(svcbackup 등) 로그인, root 키 로그인.
+# - 팀이 개인 계정을 만들면 filter_expected_account 에 추가한다(룰 조건은 그대로).
+title: SSH Login Success With Unexpected Account
+id: a8d531d2-fe86-4554-8732-94f11c4225c4
+status: experimental
+description: 허용 목록(ubuntu) 밖의 계정으로 SSH 로그인이 성공함. 서비스 계정·백도어 계정의 원격 접속
+references:
+  - https://attack.mitre.org/techniques/T1078/003/
+  - https://attack.mitre.org/techniques/T1098/004/
+author: 박지희
+date: 2026-09-17
+tags:
+  - attack.persistence
+  - attack.initial-access
+  - attack.t1078.003
+  - attack.t1098.004
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection:
+    layer_data.event: ssh_accepted
+  filter_expected_account:
+    layer_data.user:
+      - ubuntu
+  condition: selection and not filter_expected_account
+fields:
+  - src_ip
+  - pid
+  - layer_data.user
+  - layer_data.method
+  - layer_data.key_type
+  - layer_data.key_fp
+falsepositives:
+  - 허용 목록에 아직 반영하지 않은 팀원 개인 계정
+  - 실수로 root@ 로 접속(EC2 root authorized_keys 는 command= 로 막혀 있지만 Accepted 는 남는다)
+level: high
+x_correlation: none          # required(필수) | recommended(권장) | none(단독 판정)
+x_correlation_note: '단독 판정 가능. 보강: 같은 계정의 생성·그룹 추가 이력(auth_login_account_created, auth_privileged_group_add)'
+x_seed_entity:
+  - src_ip
+  - layer_data.user

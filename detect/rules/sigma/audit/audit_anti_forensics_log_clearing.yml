@@ -1,0 +1,91 @@
+# 막는 공격: 셸 히스토리 삭제·무력화, /var/log 삭제·비우기, journalctl vacuum 으로 침해 흔적 제거
+# 탐지 근거: rm/shred/truncate + 히스토리·/var/log 경로, history -c / HISTFILE=/dev/null, > /var/log/ 리다이렉션, journalctl --vacuum. uid·세션 제한 없음(훔친 SSH 로 들어온 공격자는 interactive)
+# 주의: sysstat·dmesg 정리(logrotate) 제외. 합성 검증, 9/13·9/14 실로그 오탐 0
+title: Shell History or Log File Clearing
+id: a4c8e2f6-3d1b-4e7a-9c5f-2b8d6e0a4f17
+status: experimental
+description: >
+  셸 히스토리(.bash_history 등) 삭제·무력화, /var/log 하위 로그 삭제·비우기(rm, shred, truncate, /dev/null 리다이렉션),
+  journalctl 로 저널 비우기. 침해 후 흔적 제거(T1070.003, T1070.002).
+author: 민혁
+date: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1070/003/
+  - https://attack.mitre.org/techniques/T1070/002/
+  - https://github.com/SigmaHQ/sigma/tree/master/rules/linux/process_creation
+logsource:
+  product: linux
+  service: auditd
+detection:
+  # ── 히스토리 ──
+  sel_history_rm:
+    layer_data.comm:
+      - rm
+      - unlink
+      - shred
+    layer_data.exec_args|contains:
+      - '.bash_history'
+      - '.zsh_history'
+      - '_history'
+  sel_history_disable:
+    layer_data.exec_args|contains:
+      - 'history -c'
+      - 'history -w'
+      - 'unset HISTFILE'
+      - 'HISTFILE=/dev/null'
+      - 'HISTSIZE=0'
+      - 'HISTFILESIZE=0'
+  sel_history_null:
+    layer_data.exec_args|contains|all:
+      - '/dev/null'
+      - 'history'
+  # ── 로그 파일 ──
+  sel_log_rm:
+    layer_data.comm:
+      - rm
+      - rmdir
+      - unlink
+      - shred
+    layer_data.exec_args|contains:
+      - '/var/log'
+      - '/var/spool/mail'
+  sel_log_truncate:
+    layer_data.comm: truncate
+    layer_data.exec_args|contains: '/var/log'
+  sel_log_null:
+    layer_data.comm:
+      - cp
+      - ln
+      - mv
+    layer_data.exec_args|contains|all:
+      - '/dev/null'
+      - '/var/log'
+  sel_log_redirect:
+    layer_data.exec_args|contains:
+      - '> /var/log/'
+      - '>/var/log/'
+      - '>| /var/log/'
+      - '>|/var/log/'
+  sel_journal:
+    layer_data.exec_args|contains:
+      - 'journalctl --vacuum'
+      - 'journalctl --rotate'
+  # ── 정상 예외 (SigmaHQ 동일) ──
+  filter_sysstat:
+    layer_data.exec_args|startswith: 'rm -f /var/log/sysstat/'
+  filter_dmesg:
+    layer_data.exec_args|startswith: 'rm -f -- /var/log//dmesg'
+  condition: 1 of sel_* and not 1 of filter_*
+fields:
+  - pid
+  - ppid
+  - layer_data.uid
+  - layer_data.session_type
+  - layer_data.exec_args
+falsepositives:
+  - 관리자의 수동 로그 정리, logrotate 이외의 자체 정리 스크립트
+level: high
+tags:
+  - attack.defense-evasion
+  - attack.t1070.003
+  - attack.t1070.002

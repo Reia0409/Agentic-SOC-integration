@@ -1,0 +1,44 @@
+# 막는 공격: 웹셸을 통한 계정 정보 정찰 (cat /etc/passwd, /etc/shadow)
+# 탐지 근거: auditd key=sensitive + www-data + 비대화형
+# 주의: php-fpm 의 NSS/PAM 정상 조회와 동일 필드(9/15 실측 105건 전부 정상) → 단독 판정 불가, webshell_recon 동시 발생과 상관
+title: Web Process Reads Sensitive Account File Without Interactive Session (Low-Confidence Candidate)
+id: c7f2a951-8e4d-4b1a-9c3f-2d6e8a7b5f19
+status: experimental
+description: >
+  www-data(uid=33)가 로그인 세션 없이 /etc/passwd, /etc/shadow 를 읽음.
+  공격자의 정찰(cat /etc/passwd)과 시스템 라이브러리 수준의 정상 조회가 같은 필드로 찍히므로
+  단독으로는 판정 불가. exec 기반 정찰 룰과의 동시 발생 등 다른 신호와 상관해야 함.
+author: Agentic SOC Detection Team
+date: 2026-08-25
+modified: 2026-09-15
+references:
+  - https://attack.mitre.org/techniques/T1003/008/
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_key:
+    layer_data.key: sensitive
+  selection_webuser_uid:
+    layer_data.uid: 33
+  selection_webuser_euid:
+    layer_data.euid: 33
+  filter_interactive:
+    layer_data.session_type: interactive
+  condition: selection_key and (selection_webuser_uid or selection_webuser_euid) and not filter_interactive
+fields:
+  - pid
+  - ppid
+  - layer_data.comm
+  - layer_data.exe
+  - layer_data.path
+  - layer_data.uid
+  - layer_data.euid
+  - layer_data.session_type
+falsepositives:
+  - www-data 프로세스의 PAM/NSS 계정 조회 (매우 흔함 — EC2 실측 하루 수천 건)
+level: medium
+tags:
+  - attack.credential-access
+  - attack.t1003.008
+x_correlation_required: true
